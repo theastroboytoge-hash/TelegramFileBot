@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 import requests
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, InlineQueryResultCachedDocument
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, InlineQueryHandler, ContextTypes, ConversationHandler
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -121,6 +121,11 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return "ربات فعال است!"
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    application.process_update(update)
+    return "OK"
 def keep_alive():
     while True:
         try:
@@ -281,24 +286,23 @@ async def admin_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("تعداد فایل‌ها زیاد است، لطفاً از طریق دیتابیس بررسی کنید.")
     else:
         await update.message.reply_text(text)
+application = Application.builder().token(TOKEN).build()
+conv_handler = ConversationHandler(
+    entry_points=[MessageHandler(filters.ALL & ~filters.COMMAND, receive_file)],
+    states={
+        WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)]
+    },
+    fallbacks=[]
+)
+application.add_handler(conv_handler)
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("myfiles", myfiles))
+application.add_handler(CommandHandler("delete", delete_file))
+application.add_handler(CommandHandler("rename", rename_file))
+application.add_handler(CommandHandler("addname", add_alias))
+application.add_handler(CommandHandler("admin_all", admin_all))
+application.add_handler(InlineQueryHandler(inline_handler))
 def run_bot():
-    application = Application.builder().token(TOKEN).build()
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.ALL & ~filters.COMMAND, receive_file)],
-        states={
-            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)]
-        },
-        fallbacks=[]
-    )
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("myfiles", myfiles))
-    application.add_handler(CommandHandler("delete", delete_file))
-    application.add_handler(CommandHandler("rename", rename_file))
-    application.add_handler(CommandHandler("addname", add_alias))
-    application.add_handler(CommandHandler("admin_all", admin_all))
-    application.add_handler(InlineQueryHandler(inline_handler))
-    application.bot.set_webhook(url=f"{APP_URL}/{TOKEN}")
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
