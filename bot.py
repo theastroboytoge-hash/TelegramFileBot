@@ -123,9 +123,12 @@ def home():
     return "ربات فعال است!"
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(), application.bot)
+    json_data = request.get_json()
+    if not json_data:
+        return "No data", 400
+    update = Update.de_json(json_data, application.bot)
     application.process_update(update)
-    return "OK"
+    return "OK", 200
 def keep_alive():
     while True:
         try:
