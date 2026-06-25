@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 import requests
-from flask import Flask, request
+from flask import Flask
 from telegram import Update, InlineQueryResultCachedDocument
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, InlineQueryHandler, ContextTypes, ConversationHandler
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -121,14 +121,6 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return "ربات فعال است!"
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    json_data = request.get_json()
-    if not json_data:
-        return "No data", 400
-    update = Update.de_json(json_data, application.bot)
-    application.process_update(update)
-    return "OK", 200
 def keep_alive():
     while True:
         try:
@@ -306,11 +298,7 @@ application.add_handler(CommandHandler("addname", add_alias))
 application.add_handler(CommandHandler("admin_all", admin_all))
 application.add_handler(InlineQueryHandler(inline_handler))
 def run_bot():
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN
-    )
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 if __name__ == "__main__":
     threading.Thread(target=keep_alive, daemon=True).start()
     from threading import Thread
