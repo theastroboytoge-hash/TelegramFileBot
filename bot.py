@@ -222,7 +222,8 @@ async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application = Application.builder().token(TOKEN).build()
 conv_handler = ConversationHandler(
     entry_points=[MessageHandler(filters.ALL & \~filters.COMMAND, receive_file)],
-    states={WAITING_FOR_NAME: [MessageHandler(filters.TEXT & \~filters.COMMAND, receive_name)]},
+    states={WAITING_FOR_NAME: [MessageHandler(filters.TEXT & \
+                                              filters.COMMAND, receive_name)]},
     fallbacks=[]
 )
 application.add_handler(conv_handler)
