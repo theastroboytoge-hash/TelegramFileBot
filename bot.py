@@ -133,7 +133,8 @@ async def main():
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("myfiles", myfiles))
     ptb_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_text))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \
+                                       filters.COMMAND, handle_text))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
