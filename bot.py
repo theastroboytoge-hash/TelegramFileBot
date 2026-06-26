@@ -7,7 +7,7 @@ from telegram import Update, InlineQueryResultCachedDocument, InlineKeyboardButt
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -61,22 +61,29 @@ async def check_membership(bot, user_id):
     except:
         return False
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Start command received")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("برای استفاده ابتدا در کانال @dilemmapl عضو شوید.")
         return
-    await update.message.reply_text("سلام! فایل بفرستید.")
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== DOCUMENT HANDLER TRIGGERED SUCCESSFULLY ===")
-    logger.info(f"Document: {update.message.document}")
+    await update.message.reply_text("سلام! فایل یا عکس بفرستید.")
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("=== MEDIA HANDLER TRIGGERED ===")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("ابتدا در کانال عضو شوید.")
         return
-    file = update.message.document
-    context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file.file_name or "file", 'file_type': 'document'}
+    if update.message.document:
+        file = update.message.document
+        file_type = 'document'
+        file_name = file.file_name or "file"
+    elif update.message.photo:
+        file = update.message.photo[-1]
+        file_type = 'photo'
+        file_name = "photo.jpg"
+    else:
+        await update.message.reply_text("فقط فایل یا عکس پشتیبانی می‌شود.")
+        return
+    context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file_name, 'file_type': file_type}
     await update.message.reply_text("نام دلخواه فایل را ارسال کنید (یا /cancel):")
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Text handler triggered with text: {update.message.text}")
     user = update.effective_user
     if 'pending_file' in context.user_data:
         name = update.message.text.strip()
@@ -157,8 +164,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def webhook(request: Request):
     data = await request.json()
     message = data.get('message', {})
-    logger.info(f"Webhook received - Type: {list(message.keys())}")
-    logger.info(f"Has document: {bool(message.get('document'))} | Has photo: {bool(message.get('photo'))} | Has text: {bool(message.get('text'))}")
+    logger.info(f"Has document: {bool(message.get('document'))} | Has photo: {bool(message.get('photo'))}")
     update = Update.de_json(data, ptb_app.bot)
     await ptb_app.process_update(update)
     return {"status": "ok"}
@@ -172,7 +178,7 @@ async def main():
     await ptb_app.initialize()
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("myfiles", myfiles))
-    ptb_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    ptb_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_media))
     ptb_app.add_handler(MessageHandler(filters.TEXT & \
                                        filters.COMMAND, handle_text))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
