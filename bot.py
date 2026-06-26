@@ -13,7 +13,7 @@ TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_USERNAME = "@dilemmapl"
 PORT = int(os.getenv("PORT", 10000))
-WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-app.onrender.com')}{WEBHOOK_PATH}"
 DB_FILE = "bot_files.db"
 FILES_DIR = "uploaded_files"
@@ -149,6 +149,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("addname_"):
         context.user_data['addname_id'] = int(data[8:])
         await query.edit_message_text("نام اضافه را ارسال کنید:")
+@app.post(WEBHOOK_PATH)
+async def webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, ptb_app.bot)
+    await ptb_app.process_update(update)
+    return {"status": "ok"}
+@app.get("/")
+async def root():
+    return {"status": "bot is running"}
 async def main():
     global ptb_app
     init_db()
