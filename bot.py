@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from telegram import Update, InlineQueryResultCachedDocument, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
+import asyncio
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TOKEN")
@@ -115,8 +116,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_id = int(data[4:])
         delete_file(db_id)
         await query.edit_message_text("فایل حذف شد.")
-    elif data.startswith("rename_") or data.startswith("addname_"):
-        pass
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
@@ -130,16 +129,15 @@ async def main():
     global ptb_app
     init_db()
     ptb_app = Application.builder().token(TOKEN).build()
+    await ptb_app.initialize()
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("myfiles", myfiles))
     ptb_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_text))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_text))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
     uvicorn.run(app, host="0.0.0.0", port=PORT)
