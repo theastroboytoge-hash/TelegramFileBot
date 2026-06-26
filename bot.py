@@ -64,25 +64,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("برای استفاده ابتدا در کانال @dilemmapl عضو شوید.")
         return
-    await update.message.reply_text("سلام! فایل یا عکس بفرستید.")
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== MEDIA HANDLER TRIGGERED ===")
+    await update.message.reply_text("سلام!\nعکس، فیلم، آهنگ، ویس یا هر فایل دیگری بفرستید.")
+async def handle_any_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("ابتدا در کانال عضو شوید.")
         return
-    if update.message.document:
-        file = update.message.document
-        file_type = 'document'
-        file_name = file.file_name or "file"
-    elif update.message.photo:
-        file = update.message.photo[-1]
-        file_type = 'photo'
+    message = update.message
+    file = None
+    file_name = "file"
+    file_type = "document"
+    if message.document:
+        file = message.document
+        file_name = file.file_name or "document"
+        file_type = "document"
+    elif message.photo:
+        file = message.photo[-1]
         file_name = "photo.jpg"
+        file_type = "photo"
+    elif message.video:
+        file = message.video
+        file_name = "video.mp4"
+        file_type = "video"
+    elif message.audio:
+        file = message.audio
+        file_name = file.file_name or "audio"
+        file_type = "audio"
+    elif message.voice:
+        file = message.voice
+        file_name = "voice.ogg"
+        file_type = "voice"
     else:
-        await update.message.reply_text("فقط فایل یا عکس پشتیبانی می‌شود.")
+        await update.message.reply_text("فقط فایل، عکس، ویدیو، آهنگ یا ویس ارسال کنید.")
         return
     context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file_name, 'file_type': file_type}
-    await update.message.reply_text("نام دلخواه فایل را ارسال کنید (یا /cancel):")
+    await update.message.reply_text("✅ فایل دریافت شد.\nنام دلخواه خود را ارسال کنید (یا /cancel):")
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if 'pending_file' in context.user_data:
@@ -163,8 +178,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
-    message = data.get('message', {})
-    logger.info(f"Has document: {bool(message.get('document'))} | Has photo: {bool(message.get('photo'))}")
     update = Update.de_json(data, ptb_app.bot)
     await ptb_app.process_update(update)
     return {"status": "ok"}
@@ -178,7 +191,8 @@ async def main():
     await ptb_app.initialize()
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("myfiles", myfiles))
-    ptb_app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_media))
+    ptb_app.add_handler(MessageHandler(filters.ALL & \
+                                       filters.COMMAND, handle_any_file))
     ptb_app.add_handler(MessageHandler(filters.TEXT & \
                                        filters.COMMAND, handle_text))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
