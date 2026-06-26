@@ -67,8 +67,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("سلام! فایل بفرستید.")
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== DOCUMENT HANDLER TRIGGERED ===")
-    logger.info(f"File name: {update.message.document.file_name}")
+    logger.info("=== DOCUMENT HANDLER TRIGGERED SUCCESSFULLY ===")
+    logger.info(f"Document: {update.message.document}")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("ابتدا در کانال عضو شوید.")
         return
@@ -76,7 +76,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file.file_name or "file", 'file_type': 'document'}
     await update.message.reply_text("نام دلخواه فایل را ارسال کنید (یا /cancel):")
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Text handler triggered: {update.message.text}")
+    logger.info(f"Text handler triggered with text: {update.message.text}")
     user = update.effective_user
     if 'pending_file' in context.user_data:
         name = update.message.text.strip()
@@ -156,11 +156,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
-    logger.info(f"Webhook received update. Has document: {bool(data.get('message', {}).get('document'))}")
+    message = data.get('message', {})
+    logger.info(f"Webhook received - Type: {list(message.keys())}")
+    logger.info(f"Has document: {bool(message.get('document'))} | Has photo: {bool(message.get('photo'))} | Has text: {bool(message.get('text'))}")
     update = Update.de_json(data, ptb_app.bot)
-    logger.info("Update de_json done")
     await ptb_app.process_update(update)
-    logger.info("process_update finished")
     return {"status": "ok"}
 @app.get("/")
 async def root():
