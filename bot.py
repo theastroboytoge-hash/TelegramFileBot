@@ -7,7 +7,7 @@ from telegram import Update, InlineQueryResultCachedDocument, InlineKeyboardButt
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -61,13 +61,11 @@ async def check_membership(bot, user_id):
     except:
         return False
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Start command received")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("برای استفاده ابتدا در کانال @dilemmapl عضو شوید.")
         return
     await update.message.reply_text("سلام! فایل بفرستید.")
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Document handler triggered! File name: {update.message.document.file_name}")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("ابتدا در کانال عضو شوید.")
         return
@@ -75,7 +73,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file.file_name or "file", 'file_type': 'document'}
     await update.message.reply_text("نام دلخواه فایل را ارسال کنید (یا /cancel):")
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Text handler triggered: {update.message.text}")
     user = update.effective_user
     if 'pending_file' in context.user_data:
         name = update.message.text.strip()
@@ -155,7 +152,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
-    logger.info("Webhook received update")
     update = Update.de_json(data, ptb_app.bot)
     await ptb_app.process_update(update)
     return {"status": "ok"}
