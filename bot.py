@@ -83,6 +83,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = context.user_data.pop('pending_file')
         add_file(user.id, data['file_id'], data['file_name'], [name], data['file_type'])
         await update.message.reply_text(f"✅ فایل با نام '{name}' ذخیره شد.\nحالا در اینلاین سرچ کنید.")
+        return
+    if 'rename_id' in context.user_data or 'addname_id' in context.user_data:
+        await handle_rename_or_addname(update, context)
+async def handle_rename_or_addname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = update.message.text.strip()
+    if 'rename_id' in context.user_data:
+        db_id = context.user_data.pop('rename_id')
+        files = get_user_files(user.id)
+        for row in files:
+            if row[0] == db_id:
+                cnames = json.loads(row[4])
+                cnames[0] = text
+                update_names(db_id, cnames)
+                await update.message.reply_text("نام تغییر کرد.")
+                return
+    elif 'addname_id' in context.user_data:
+        db_id = context.user_data.pop('addname_id')
+        files = get_user_files(user.id)
+        for row in files:
+            if row[0] == db_id:
+                cnames = json.loads(row[4])
+                if text not in cnames:
+                    cnames.append(text)
+                update_names(db_id, cnames)
+                await update.message.reply_text("نام اضافه شد.")
+                return
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query.lower()
     user_id = update.inline_query.from_user.id
@@ -116,15 +143,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_id = int(data[4:])
         delete_file(db_id)
         await query.edit_message_text("فایل حذف شد.")
-@app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, ptb_app.bot)
-    await ptb_app.process_update(update)
-    return {"status": "ok"}
-@app.get("/")
-async def root():
-    return {"status": "bot is running"}
+    elif data.startswith("rename_"):
+        context.user_data['rename_id'] = int(data[7:])
+        await query.edit_message_text("نام جدید را ارسال کنید:")
+    elif data.startswith("addname_"):
+        context.user_data['addname_id'] = int(data[8:])
+        await query.edit_message_text("نام اضافه را ارسال کنید:")
 async def main():
     global ptb_app
     init_db()
