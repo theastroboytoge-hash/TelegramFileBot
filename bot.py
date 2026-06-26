@@ -61,11 +61,13 @@ async def check_membership(bot, user_id):
     except:
         return False
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Start command received")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("برای استفاده ابتدا در کانال @dilemmapl عضو شوید.")
         return
     await update.message.reply_text("سلام! فایل بفرستید.")
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Document received")
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("ابتدا در کانال عضو شوید.")
         return
@@ -73,6 +75,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file.file_name or "file", 'file_type': 'document'}
     await update.message.reply_text("نام دلخواه فایل را ارسال کنید (یا /cancel):")
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Text message received")
     user = update.effective_user
     if 'pending_file' in context.user_data:
         name = update.message.text.strip()
