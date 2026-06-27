@@ -225,6 +225,8 @@ async def main():
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
+    server = uvicorn.Server(config)
+    await server.serve()
 if __name__ == "__main__":
     asyncio.run(main())
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
