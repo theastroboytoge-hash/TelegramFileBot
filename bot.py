@@ -22,7 +22,12 @@ db_pool = None
 async def get_pool():
     global db_pool
     if db_pool is None:
-        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            max_inactive_connection_lifetime=300.0
+        )
         async with db_pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS files (
