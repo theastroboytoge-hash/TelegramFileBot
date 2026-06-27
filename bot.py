@@ -1,7 +1,7 @@
 import logging
-import sqlite3
 import json
 import os
+import asyncpg
 from fastapi import FastAPI, Request
 from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedVoice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
@@ -15,45 +15,52 @@ CHANNEL_USERNAME = "@dilemmapl"
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-app.onrender.com')}{WEBHOOK_PATH}"
-DB_FILE = "bot_files.db"
-FILES_DIR = "uploaded_files"
-os.makedirs(FILES_DIR, exist_ok=True)
+DATABASE_URL = os.getenv("DATABASE_URL")
 app = FastAPI()
 ptb_app = None
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, user_id INTEGER, file_id TEXT, file_name TEXT, custom_names TEXT, file_type TEXT)''')
-    conn.commit()
-    conn.close()
-def add_file(user_id, file_id, file_name, custom_names, file_type):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO files (user_id, file_id, file_name, custom_names, file_type) VALUES (?, ?, ?, ?, ?)", (user_id, file_id, file_name, json.dumps(custom_names), file_type))
-    conn.commit()
-    conn.close()
-def get_user_files(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    if user_id == ADMIN_ID:
-        c.execute("SELECT * FROM files")
-    else:
-        c.execute("SELECT * FROM files WHERE user_id=?", (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    return rows
-def delete_file(file_db_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM files WHERE id=?", (file_db_id,))
-    conn.commit()
-    conn.close()
-def update_names(file_db_id, custom_names):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("UPDATE files SET custom_names=? WHERE id=?", (json.dumps(custom_names), file_db_id))
-    conn.commit()
-    conn.close()
+db_pool = None
+async def get_pool():
+    global db_pool
+    if db_pool is None:
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS files (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    custom_names JSONB NOT NULL DEFAULT '[]',
+                    file_type TEXT NOT NULL
+                )
+            ''')
+    return db_pool
+async def add_file(user_id, file_id, file_name, custom_names, file_type):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO files (user_id, file_id, file_name, custom_names, file_type) VALUES ($1, $2, $3, $4, $5)",
+            user_id, file_id, file_name, json.dumps(custom_names), file_type
+        )
+async def get_user_files(user_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if user_id == ADMIN_ID:
+            rows = await conn.fetch("SELECT * FROM files")
+        else:
+            rows = await conn.fetch("SELECT * FROM files WHERE user_id=$1", user_id)
+        return rows
+async def delete_file(file_db_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM files WHERE id=$1", file_db_id)
+async def update_names(file_db_id, custom_names):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE files SET custom_names=$1 WHERE id=$2",
+            json.dumps(custom_names), file_db_id
+        )
 async def check_membership(bot, user_id):
     try:
         member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
@@ -80,28 +87,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("لغو شد.")
                 return
             data = context.user_data.pop('pending_file')
-            add_file(user.id, data['file_id'], data['file_name'], [name], data['file_type'])
+            await add_file(user.id, data['file_id'], data['file_name'], [name], data['file_type'])
             await message.reply_text(f"✅ فایل با نام '{name}' ذخیره شد.\nحالا در اینلاین سرچ کنید.")
         elif 'rename_id' in context.user_data:
             db_id = context.user_data.pop('rename_id')
-            files = get_user_files(user.id)
+            files = await get_user_files(user.id)
             for row in files:
-                if row[0] == db_id:
-                    cnames = json.loads(row[4])
+                if row['id'] == db_id:
+                    cnames = json.loads(row['custom_names'])
                     cnames[0] = text.strip()
-                    update_names(db_id, cnames)
+                    await update_names(db_id, cnames)
                     await message.reply_text("نام تغییر کرد.")
                     return
             await message.reply_text("فایل یافت نشد.")
         elif 'addname_id' in context.user_data:
             db_id = context.user_data.pop('addname_id')
-            files = get_user_files(user.id)
+            files = await get_user_files(user.id)
             for row in files:
-                if row[0] == db_id:
-                    cnames = json.loads(row[4])
+                if row['id'] == db_id:
+                    cnames = json.loads(row['custom_names'])
                     if text.strip() not in cnames:
                         cnames.append(text.strip())
-                    update_names(db_id, cnames)
+                    await update_names(db_id, cnames)
                     await message.reply_text("نام اضافه شد.")
                     return
             await message.reply_text("فایل یافت نشد.")
@@ -146,10 +153,12 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query.lower()
     user_id = update.inline_query.from_user.id
     results = []
-    files = get_user_files(user_id)
+    files = await get_user_files(user_id)
     for row in files:
-        db_id, _, fid, _, cnames_json, file_type = row
-        cnames = json.loads(cnames_json)
+        db_id = row['id']
+        fid = row['file_id']
+        cnames = json.loads(row['custom_names'])
+        file_type = row['file_type']
         if not query or any(query in n.lower() for n in cnames):
             title = cnames[0]
             if file_type == "photo":
@@ -167,11 +176,11 @@ async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_membership(context.bot, update.effective_user.id):
         await update.message.reply_text("عضو کانال شوید.")
         return
-    files = get_user_files(update.effective_user.id)
+    files = await get_user_files(update.effective_user.id)
     if not files:
         await update.message.reply_text("فایلی ندارید.")
         return
-    keyboard = [[InlineKeyboardButton(json.loads(row[4])[0], callback_data=f"file_{row[0]}")] for row in files]
+    keyboard = [[InlineKeyboardButton(json.loads(row['custom_names'])[0], callback_data=f"file_{row['id']}")] for row in files]
     await update.message.reply_text("فایل‌های شما:", reply_markup=InlineKeyboardMarkup(keyboard))
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -179,11 +188,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data.startswith("file_"):
         db_id = int(data[5:])
-        keyboard = [[InlineKeyboardButton("ارسال", switch_inline_query_current_chat="")],[InlineKeyboardButton("تغییر نام", callback_data=f"rename_{db_id}")],[InlineKeyboardButton("اضافه کردن نام", callback_data=f"addname_{db_id}")],[InlineKeyboardButton("حذف", callback_data=f"del_{db_id}")]]
+        keyboard = [[InlineKeyboardButton("ارسال", switch_inline_query_current_chat="")],
+                    [InlineKeyboardButton("تغییر نام", callback_data=f"rename_{db_id}")],
+                    [InlineKeyboardButton("اضافه کردن نام", callback_data=f"addname_{db_id}")],
+                    [InlineKeyboardButton("حذف", callback_data=f"del_{db_id}")]]
         await query.edit_message_text("انتخاب عملیات:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data.startswith("del_"):
         db_id = int(data[4:])
-        delete_file(db_id)
+        await delete_file(db_id)
         await query.edit_message_text("فایل حذف شد.")
     elif data.startswith("rename_"):
         context.user_data['rename_id'] = int(data[7:])
@@ -202,7 +214,7 @@ async def root():
     return {"status": "bot is running"}
 async def main():
     global ptb_app
-    init_db()
+    await get_pool()
     ptb_app = Application.builder().token(TOKEN).build()
     await ptb_app.initialize()
     ptb_app.add_handler(CommandHandler("start", start))
