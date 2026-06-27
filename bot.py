@@ -65,11 +65,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("برای استفاده ابتدا در کانال @dilemmapl عضو شوید.")
         return
     await update.message.reply_text("سلام!\nعکس، فیلم، آهنگ، ویس یا هر فایل دیگری بفرستید.")
-async def handle_any_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_membership(context.bot, update.effective_user.id):
-        await update.message.reply_text("ابتدا در کانال عضو شوید.")
-        return
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     message = update.message
+    if 'pending_file' in context.user_data or 'rename_id' in context.user_data or 'addname_id' in context.user_data:
+        text = message.text or message.caption
+        if not text:
+            await message.reply_text("لطفاً نام را به صورت متن ارسال کنید.")
+            return
+        if 'pending_file' in context.user_data:
+            name = text.strip()
+            if name == '/cancel':
+                context.user_data.pop('pending_file')
+                await message.reply_text("لغو شد.")
+                return
+            data = context.user_data.pop('pending_file')
+            add_file(user.id, data['file_id'], data['file_name'], [name], data['file_type'])
+            await message.reply_text(f"✅ فایل با نام '{name}' ذخیره شد.\nحالا در اینلاین سرچ کنید.")
+        elif 'rename_id' in context.user_data:
+            db_id = context.user_data.pop('rename_id')
+            files = get_user_files(user.id)
+            for row in files:
+                if row[0] == db_id:
+                    cnames = json.loads(row[4])
+                    cnames[0] = text.strip()
+                    update_names(db_id, cnames)
+                    await message.reply_text("نام تغییر کرد.")
+                    return
+            await message.reply_text("فایل یافت نشد.")
+        elif 'addname_id' in context.user_data:
+            db_id = context.user_data.pop('addname_id')
+            files = get_user_files(user.id)
+            for row in files:
+                if row[0] == db_id:
+                    cnames = json.loads(row[4])
+                    if text.strip() not in cnames:
+                        cnames.append(text.strip())
+                    update_names(db_id, cnames)
+                    await message.reply_text("نام اضافه شد.")
+                    return
+            await message.reply_text("فایل یافت نشد.")
+        return
+    if not await check_membership(context.bot, user.id):
+        await message.reply_text("ابتدا در کانال عضو شوید.")
+        return
     file = None
     file_name = "file"
     file_type = "document"
@@ -94,48 +133,15 @@ async def handle_any_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_name = "voice.ogg"
         file_type = "voice"
     else:
-        await update.message.reply_text("فقط فایل، عکس، ویدیو، آهنگ یا ویس ارسال کنید.")
+        await message.reply_text("فقط فایل، عکس، ویدیو، آهنگ یا ویس ارسال کنید.")
         return
     context.user_data['pending_file'] = {'file_id': file.file_id, 'file_name': file_name, 'file_type': file_type}
-    await update.message.reply_text("✅ فایل دریافت شد.\nنام دلخواه خود را ارسال کنید (یا /cancel):")
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if 'pending_file' in context.user_data:
-        name = update.message.text.strip()
-        if name == '/cancel':
-            context.user_data.pop('pending_file')
-            await update.message.reply_text("لغو شد.")
-            return
-        data = context.user_data.pop('pending_file')
-        add_file(user.id, data['file_id'], data['file_name'], [name], data['file_type'])
-        await update.message.reply_text(f"✅ فایل با نام '{name}' ذخیره شد.\nحالا در اینلاین سرچ کنید.")
-        return
-    if 'rename_id' in context.user_data or 'addname_id' in context.user_data:
-        await handle_rename_or_addname(update, context)
-async def handle_rename_or_addname(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = update.message.text.strip()
-    if 'rename_id' in context.user_data:
-        db_id = context.user_data.pop('rename_id')
-        files = get_user_files(user.id)
-        for row in files:
-            if row[0] == db_id:
-                cnames = json.loads(row[4])
-                cnames[0] = text
-                update_names(db_id, cnames)
-                await update.message.reply_text("نام تغییر کرد.")
-                return
-    elif 'addname_id' in context.user_data:
-        db_id = context.user_data.pop('addname_id')
-        files = get_user_files(user.id)
-        for row in files:
-            if row[0] == db_id:
-                cnames = json.loads(row[4])
-                if text not in cnames:
-                    cnames.append(text)
-                update_names(db_id, cnames)
-                await update.message.reply_text("نام اضافه شد.")
-                return
+    await message.reply_text("✅ فایل دریافت شد.\nنام دلخواه خود را ارسال کنید (یا /cancel):")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop('pending_file', None)
+    context.user_data.pop('rename_id', None)
+    context.user_data.pop('addname_id', None)
+    await update.message.reply_text("عملیات لغو شد.")
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query.lower()
     user_id = update.inline_query.from_user.id
@@ -191,10 +197,8 @@ async def main():
     await ptb_app.initialize()
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("myfiles", myfiles))
-    ptb_app.add_handler(MessageHandler(filters.ALL & \
-                                       filters.COMMAND, handle_any_file))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_text))
+    ptb_app.add_handler(CommandHandler("cancel", cancel))
+    ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
