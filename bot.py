@@ -3,7 +3,7 @@ import sqlite3
 import json
 import os
 from fastapi import FastAPI, Request
-from telegram import Update, InlineQueryResultCachedDocument, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedVoice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
@@ -148,10 +148,20 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = []
     files = get_user_files(user_id)
     for row in files:
-        db_id, _, fid, _, cnames_json, _ = row
+        db_id, _, fid, _, cnames_json, file_type = row
         cnames = json.loads(cnames_json)
         if not query or any(query in n.lower() for n in cnames):
-            results.append(InlineQueryResultCachedDocument(id=str(db_id), document_file_id=fid, title=cnames[0]))
+            title = cnames[0]
+            if file_type == "photo":
+                results.append(InlineQueryResultCachedPhoto(id=str(db_id), photo_file_id=fid, title=title))
+            elif file_type == "video":
+                results.append(InlineQueryResultCachedVideo(id=str(db_id), video_file_id=fid, title=title))
+            elif file_type == "audio":
+                results.append(InlineQueryResultCachedAudio(id=str(db_id), audio_file_id=fid, title=title))
+            elif file_type == "voice":
+                results.append(InlineQueryResultCachedVoice(id=str(db_id), voice_file_id=fid, title=title))
+            else:
+                results.append(InlineQueryResultCachedDocument(id=str(db_id), document_file_id=fid, title=title))
     await update.inline_query.answer(results, cache_time=0)
 async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_membership(context.bot, update.effective_user.id):
