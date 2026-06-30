@@ -422,8 +422,11 @@ async def main():
     ptb_app.add_handler(CommandHandler("cancel", cancel))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
-    ptb_app.add_handler(MessageHandler(filters.ALL & \~filters.TEXT & \~filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \
+                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.ALL & \
+                                       filters.TEXT & \
+                                       filters.COMMAND, handle_message))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
