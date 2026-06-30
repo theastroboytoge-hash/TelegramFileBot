@@ -298,54 +298,76 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['nav_history'] = []
     await update.message.reply_text("Operation cancelled.", reply_markup=MAIN_KEYBOARD)
 
-# ==================== INLINE QUERY بهبود یافته ====================
+# ==================== INLINE QUERY بهبود یافته (بهترین نسخه برای موزیک) ====================
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.inline_query.query.lower().strip()
     user_id = update.inline_query.from_user.id
     results = []
     
-    logger.info(f"Inline query from user {user_id} with text: '{query_text}'")
+    logger.info(f"Inline query from user {user_id} | query: '{query_text}'")
     
     try:
         files = await get_user_files(user_id)
-        logger.info(f"Found {len(files)} files for user")
+        logger.info(f"Found {len(files)} files for user {user_id}")
         
         for row in files:
             try:
-                file_id = row['id']
-                fid = row['file_id']
+                db_id = str(row['id'])
+                file_id = row['file_id']
                 ftype = row['file_type']
+                file_name = row.get('file_name', 'file')
+                
                 cnames = json.loads(row.get('custom_names') or '[]')
                 if not cnames:
-                    cnames = [row.get('file_name', 'file')]
+                    cnames = [file_name]
                 
                 title = cnames[0]
-                logger.info(f"Processing file {file_id} - type: {ftype} - title: {title}")
+                search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
                 
-                if not query_text or any(query_text in n.lower() for n in cnames):
-                    if ftype == "photo":
-                        results.append(InlineQueryResultCachedPhoto(id=str(file_id), photo_file_id=fid, title=title))
-                    elif ftype == "video":
-                        results.append(InlineQueryResultCachedVideo(id=str(file_id), video_file_id=fid, title=title))
-                    elif ftype == "audio":
-                        results.append(InlineQueryResultCachedAudio(id=str(file_id), audio_file_id=fid, title=title))
-                    elif ftype == "voice":
-                        results.append(InlineQueryResultCachedVoice(id=str(file_id), voice_file_id=fid, title=title))
-                    else:
-                        # همه بقیه انواع به عنوان Document
-                        results.append(InlineQueryResultCachedDocument(id=str(file_id), document_file_id=fid, title=title))
-                    
-                    logger.info(f"Added to results: {title} ({ftype})")
+                # فیلتر جستجو
+                if query_text and query_text not in search_text:
+                    continue
+
+                # منطق هوشمند برای انواع فایل (به خصوص موزیک)
+                if ftype == "photo":
+                    results.append(InlineQueryResultCachedPhoto(id=db_id, photo_file_id=file_id, title=title))
+                
+                elif ftype == "video":
+                    results.append(InlineQueryResultCachedVideo(id=db_id, video_file_id=file_id, title=title))
+                
+                elif ftype == "voice":
+                    results.append(InlineQueryResultCachedVoice(id=db_id, voice_file_id=file_id, title=title))
+                
+                elif ftype == "audio":
+                    # بهترین حالت برای موزیک
+                    results.append(InlineQueryResultCachedAudio(
+                        id=db_id,
+                        audio_file_id=file_id,
+                        title=title
+                    ))
+                
+                else:
+                    # همه فایل‌های دیگر + موزیک‌هایی که به صورت document ذخیره شدند
+                    results.append(InlineQueryResultCachedDocument(
+                        id=db_id,
+                        document_file_id=file_id,
+                        title=title
+                    ))
+                
+                logger.debug(f"Added to results: {title} ({ftype})")
+
             except Exception as e:
-                logger.error(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
+                logger.warning(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
                 continue
                 
-        logger.info(f"Returning {len(results)} results")
-        await update.inline_query.answer(results[:50], cache_time=5)
+        final_results = results[:50]
+        logger.info(f"Returning {len(final_results)} results")
+        await update.inline_query.answer(final_results, cache_time=5, is_personal=True)
         
     except Exception as e:
         logger.error(f"Critical inline query error: {e}", exc_info=True)
         await update.inline_query.answer([])
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -391,7 +413,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         await show_myfiles_page(update, context, int(data[5:]))
     elif data.startswith("dupadd_"):
-        # ... (duplicate logic if needed)
         pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,7 +444,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "Memory":
             size = await get_user_total_size(user.id)
             await message.reply_text(f"Total storage: {human_readable_size(size)}", reply_markup=MAIN_KEYBOARD)
-    # ... (بقیه منطق awaiting_file, awaiting_name و ... را می‌توانی از نسخه قبلی تکمیل کنی اگر نیاز بود)
 
 async def main():
     global ptb_app
@@ -437,11 +457,7 @@ async def main():
     ptb_app.add_handler(CommandHandler("cancel", cancel))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_message))
-    ptb_app.add_handler(MessageHandler(filters.ALL & \
-                                       filters.TEXT & \
-                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & filters.COMMAND, handle_message))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
