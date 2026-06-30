@@ -304,61 +304,48 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.inline_query.from_user.id
     results = []
     
+    logger.info(f"Inline query from user {user_id} with text: '{query_text}'")
+    
     try:
         files = await get_user_files(user_id)
+        logger.info(f"Found {len(files)} files for user")
         
         for row in files:
             try:
-                cnames = json.loads(row.get('custom_names') or '[]')
-                if not cnames:
-                    cnames = [row.get('file_name', 'Unknown')]
-                
-                title = cnames[0]
+                file_id = row['id']
                 fid = row['file_id']
                 ftype = row['file_type']
+                cnames = json.loads(row.get('custom_names') or '[]')
+                if not cnames:
+                    cnames = [row.get('file_name', 'file')]
                 
-                # شرط نمایش (query خالی یا匹配 نام)
+                title = cnames[0]
+                logger.info(f"Processing file {file_id} - type: {ftype} - title: {title}")
+                
                 if not query_text or any(query_text in n.lower() for n in cnames):
                     if ftype == "photo":
-                        results.append(InlineQueryResultCachedPhoto(
-                            id=str(row['id']), 
-                            photo_file_id=fid, 
-                            title=title
-                        ))
+                        results.append(InlineQueryResultCachedPhoto(id=str(file_id), photo_file_id=fid, title=title))
                     elif ftype == "video":
-                        results.append(InlineQueryResultCachedVideo(
-                            id=str(row['id']), 
-                            video_file_id=fid, 
-                            title=title
-                        ))
+                        results.append(InlineQueryResultCachedVideo(id=str(file_id), video_file_id=fid, title=title))
                     elif ftype == "audio":
-                        results.append(InlineQueryResultCachedAudio(
-                            id=str(row['id']), 
-                            audio_file_id=fid, 
-                            title=title
-                        ))
+                        results.append(InlineQueryResultCachedAudio(id=str(file_id), audio_file_id=fid, title=title))
                     elif ftype == "voice":
-                        results.append(InlineQueryResultCachedVoice(
-                            id=str(row['id']), 
-                            voice_file_id=fid, 
-                            title=title
-                        ))
-                    else:  # document و بقیه
-                        results.append(InlineQueryResultCachedDocument(
-                            id=str(row['id']), 
-                            document_file_id=fid, 
-                            title=title
-                        ))
+                        results.append(InlineQueryResultCachedVoice(id=str(file_id), voice_file_id=fid, title=title))
+                    else:
+                        # همه بقیه انواع به عنوان Document
+                        results.append(InlineQueryResultCachedDocument(id=str(file_id), document_file_id=fid, title=title))
+                    
+                    logger.info(f"Added to results: {title} ({ftype})")
             except Exception as e:
-                logger.error(f"Error processing file {row.get('id')} ({row.get('file_type')}): {e}")
-                continue  # ادامه با فایل بعدی
+                logger.error(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
+                continue
                 
+        logger.info(f"Returning {len(results)} results")
         await update.inline_query.answer(results[:50], cache_time=5)
         
     except Exception as e:
-        logger.error(f"Inline query failed: {e}")
+        logger.error(f"Critical inline query error: {e}", exc_info=True)
         await update.inline_query.answer([])
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
