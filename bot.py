@@ -169,6 +169,132 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
+# ====================== تشخیص هوشمند موسیقی (بروزرسانی) ======================
+def is_audio_file(message):
+    if message.audio:
+        return True, "audio", message.audio.file_name or "audio.mp3"
+    
+    if message.document:
+        mime = message.document.mime_type or ""
+        file_name = message.document.file_name or ""
+        ext = file_name.lower()
+        if (mime.startswith("audio/") or 
+            ext.endswith(('.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.wma', '.opus', '.m4b'))):
+            return True, "audio", file_name
+    return False, None, None
+
+# ====================== هندلر دریافت فایل (بروزرسانی) ======================
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user = update.effective_user
+    state = context.user_data.get('state')
+
+    if state != "awaiting_file":
+        return
+
+    is_audio, file_type, original_name = is_audio_file(message)
+
+    if message.photo:
+        file_type = "photo"
+        file = message.photo[-1]
+        file_name = "photo.jpg"
+    elif message.video:
+        file_type = "video"
+        file = message.video
+        file_name = message.video.file_name or "video.mp4"
+    elif message.voice:
+        file_type = "voice"
+        file = message.voice
+        file_name = "voice.ogg"
+    elif is_audio:
+        file_type = "audio"
+        file = message.audio or message.document
+        file_name = original_name
+    elif message.document:
+        file_type = "document"
+        file = message.document
+        file_name = message.document.file_name or "document"
+    else:
+        await message.reply_text("این نوع فایل پشتیبانی نمی‌شود.")
+        return
+
+    file_id = file.file_id
+    file_size = getattr(file, 'file_size', 0) or 0
+
+    await add_file(
+        user_id=user.id,
+        file_id=file_id,
+        file_name=file_name,
+        custom_names=[file_name],
+        file_type=file_type,
+        file_size=file_size
+    )
+
+    await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** ذخیره شد.", parse_mode="Markdown")
+
+# ====================== INLINE QUERY (بهبود یافته با لاگ کامل) ======================
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query_text = update.inline_query.query.lower().strip()
+    user_id = update.inline_query.from_user.id
+    results = []
+    
+    logger.info(f"Inline query from user {user_id} | query: '{query_text}'")
+    
+    try:
+        files = await get_user_files(user_id)
+        logger.info(f"Found {len(files)} files for user {user_id}")
+        
+        for row in files:
+            try:
+                db_id = str(row['id'])
+                file_id = row['file_id']
+                ftype = row['file_type']
+                file_name = row.get('file_name', 'file')
+                
+                cnames = json.loads(row.get('custom_names') or '[]')
+                if not cnames:
+                    cnames = [file_name]
+                
+                title = cnames[0]
+                search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
+                
+                if query_text and query_text not in search_text:
+                    continue
+
+                if ftype == "photo":
+                    results.append(InlineQueryResultCachedPhoto(id=db_id, photo_file_id=file_id, title=title))
+                elif ftype == "video":
+                    results.append(InlineQueryResultCachedVideo(id=db_id, video_file_id=file_id, title=title))
+                elif ftype == "voice":
+                    results.append(InlineQueryResultCachedVoice(id=db_id, voice_file_id=file_id, title=title))
+                elif ftype == "audio":
+                    results.append(InlineQueryResultCachedAudio(
+                        id=db_id,
+                        audio_file_id=file_id,
+                        title=title
+                    ))
+                else:
+                    results.append(InlineQueryResultCachedDocument(
+                        id=db_id,
+                        document_file_id=file_id,
+                        title=title
+                    ))
+                
+                logger.debug(f"Added to results: {title} ({ftype})")
+
+            except Exception as e:
+                logger.warning(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
+                continue
+                
+        final_results = results[:50]
+        logger.info(f"Returning {len(final_results)} results")
+        await update.inline_query.answer(final_results, cache_time=5, is_personal=True)
+        
+    except Exception as e:
+        logger.error(f"Critical inline query error: {e}", exc_info=True)
+        await update.inline_query.answer([])
+
+# ====================== توابع منو و حالت‌ها (بدون تغییر از نسخه‌ی کامل) ======================
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str):
     msg = get_msg(update)
     if not msg:
@@ -298,76 +424,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['nav_history'] = []
     await update.message.reply_text("Operation cancelled.", reply_markup=MAIN_KEYBOARD)
 
-# ==================== INLINE QUERY بهبود یافته (بهترین نسخه برای موزیک) ====================
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.inline_query.query.lower().strip()
-    user_id = update.inline_query.from_user.id
-    results = []
-    
-    logger.info(f"Inline query from user {user_id} | query: '{query_text}'")
-    
-    try:
-        files = await get_user_files(user_id)
-        logger.info(f"Found {len(files)} files for user {user_id}")
-        
-        for row in files:
-            try:
-                db_id = str(row['id'])
-                file_id = row['file_id']
-                ftype = row['file_type']
-                file_name = row.get('file_name', 'file')
-                
-                cnames = json.loads(row.get('custom_names') or '[]')
-                if not cnames:
-                    cnames = [file_name]
-                
-                title = cnames[0]
-                search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
-                
-                # فیلتر جستجو
-                if query_text and query_text not in search_text:
-                    continue
-
-                # منطق هوشمند برای انواع فایل (به خصوص موزیک)
-                if ftype == "photo":
-                    results.append(InlineQueryResultCachedPhoto(id=db_id, photo_file_id=file_id, title=title))
-                
-                elif ftype == "video":
-                    results.append(InlineQueryResultCachedVideo(id=db_id, video_file_id=file_id, title=title))
-                
-                elif ftype == "voice":
-                    results.append(InlineQueryResultCachedVoice(id=db_id, voice_file_id=file_id, title=title))
-                
-                elif ftype == "audio":
-                    # بهترین حالت برای موزیک
-                    results.append(InlineQueryResultCachedAudio(
-                        id=db_id,
-                        audio_file_id=file_id,
-                        title=title
-                    ))
-                
-                else:
-                    # همه فایل‌های دیگر + موزیک‌هایی که به صورت document ذخیره شدند
-                    results.append(InlineQueryResultCachedDocument(
-                        id=db_id,
-                        document_file_id=file_id,
-                        title=title
-                    ))
-                
-                logger.debug(f"Added to results: {title} ({ftype})")
-
-            except Exception as e:
-                logger.warning(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
-                continue
-                
-        final_results = results[:50]
-        logger.info(f"Returning {len(final_results)} results")
-        await update.inline_query.answer(final_results, cache_time=5, is_personal=True)
-        
-    except Exception as e:
-        logger.error(f"Critical inline query error: {e}", exc_info=True)
-        await update.inline_query.answer([])
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -412,8 +468,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "awaiting_search")
     elif data.startswith("page_"):
         await show_myfiles_page(update, context, int(data[5:]))
-    elif data.startswith("dupadd_"):
-        pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -444,6 +498,61 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "Memory":
             size = await get_user_total_size(user.id)
             await message.reply_text(f"Total storage: {human_readable_size(size)}", reply_markup=MAIN_KEYBOARD)
+    elif state == "awaiting_rename_text":
+        # Handle rename
+        new_name = text.strip()
+        rename_id = context.user_data.get('rename_id')
+        if rename_id:
+            row = await get_file_by_id(rename_id)
+            if row:
+                cnames = json.loads(row['custom_names'])
+                if cnames:
+                    cnames[0] = new_name
+                else:
+                    cnames = [new_name]
+                await update_names(rename_id, cnames)
+                await message.reply_text("Name updated.", reply_markup=MAIN_KEYBOARD)
+                context.user_data.pop('rename_id', None)
+                await enter_state(update, context, "main")
+    elif state == "awaiting_addname_text":
+        # Handle add name
+        new_name = text.strip()
+        addname_id = context.user_data.get('addname_id')
+        if addname_id:
+            row = await get_file_by_id(addname_id)
+            if row:
+                cnames = json.loads(row['custom_names'])
+                if new_name not in cnames:
+                    cnames.append(new_name)
+                    await update_names(addname_id, cnames)
+                    await message.reply_text("Name added.", reply_markup=MAIN_KEYBOARD)
+                else:
+                    await message.reply_text("Name already exists.", reply_markup=BACK_KEYBOARD)
+                context.user_data.pop('addname_id', None)
+                await enter_state(update, context, "main")
+    elif state == "awaiting_search":
+        query = text.strip()
+        if query:
+            context.user_data['search_query'] = query
+            await enter_state(update, context, "search_results")
+        else:
+            await message.reply_text("Please send a non-empty search term.")
+    elif state == "awaiting_broadcast_message":
+        if update.effective_user.id == ADMIN_ID:
+            # Broadcast
+            user_ids = await get_all_user_ids()
+            success = 0
+            for uid in user_ids:
+                try:
+                    await context.bot.send_message(uid, text)
+                    success += 1
+                    await asyncio.sleep(0.05)
+                except:
+                    pass
+            await message.reply_text(f"Broadcast sent to {success} users.", reply_markup=MAIN_KEYBOARD)
+            await enter_state(update, context, "main")
+    else:
+        await message.reply_text("Unknown command. Use /start.", reply_markup=MAIN_KEYBOARD)
 
 async def main():
     global ptb_app
@@ -451,17 +560,28 @@ async def main():
     ptb_app = Application.builder().token(TOKEN).build()
     ptb_app.add_error_handler(error_handler)
     await ptb_app.initialize()
+
+    # Command handlers
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("help", help_command))
     ptb_app.add_handler(CommandHandler("myfiles", lambda u,c: enter_state(u,c,"myfiles_list")))
     ptb_app.add_handler(CommandHandler("cancel", cancel))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & filters.COMMAND, handle_message))
+
+    # Inline query
     ptb_app.add_handler(InlineQueryHandler(inline_query))
+
+    # Callback query
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
+
+    # Message handlers: text (excluding commands) and files
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
+
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
+
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
