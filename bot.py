@@ -161,13 +161,9 @@ def human_readable_size(size_bytes):
         i += 1
     return f"{size:.2f} {units[i]}"
 
+# ====================== ERROR HANDLER (بروزرسانی شده - بدون تغییر) ======================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
-    try:
-        if update and hasattr(update, 'effective_message') and update.effective_message:
-            await update.effective_message.reply_text("An error occurred. Please try again later.")
-    except:
-        pass
 
 # ====================== تشخیص هوشمند موسیقی (بروزرسانی) ======================
 def is_audio_file(message):
@@ -183,7 +179,56 @@ def is_audio_file(message):
             return True, "audio", file_name
     return False, None, None
 
-# ====================== هندلر دریافت فایل (بروزرسانی) ======================
+# ====================== INLINE QUERY (بروزرسانی شده - بدون تغییر) ======================
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query_text = update.inline_query.query.lower().strip()
+    user_id = update.inline_query.from_user.id
+    results = []
+    
+    logger.info(f"Inline query from user {user_id} | query: '{query_text}'")
+    
+    try:
+        files = await get_user_files(user_id)
+        
+        for row in files:
+            try:
+                db_id = str(row['id'])
+                file_id = row['file_id']
+                ftype = row['file_type']
+                file_name = row.get('file_name', 'file')
+                
+                cnames = json.loads(row.get('custom_names') or '[]')
+                if not cnames:
+                    cnames = [file_name]
+                
+                title = cnames[0]
+                search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
+                
+                if query_text and query_text not in search_text:
+                    continue
+
+                if ftype == "photo":
+                    results.append(InlineQueryResultCachedPhoto(id=db_id, photo_file_id=file_id, title=title))
+                elif ftype == "video":
+                    results.append(InlineQueryResultCachedVideo(id=db_id, video_file_id=file_id, title=title))
+                elif ftype == "voice":
+                    results.append(InlineQueryResultCachedVoice(id=db_id, voice_file_id=file_id, title=title))
+                elif ftype == "audio":
+                    results.append(InlineQueryResultCachedAudio(id=db_id, audio_file_id=file_id))
+                else:
+                    results.append(InlineQueryResultCachedDocument(id=db_id, document_file_id=file_id, title=title))
+                
+            except Exception as e:
+                logger.warning(f"Error processing file {row.get('id')}: {e}")
+                continue
+                
+        await update.inline_query.answer(results[:50], cache_time=5, is_personal=True)
+        
+    except Exception as e:
+        logger.error(f"Critical inline query error: {e}", exc_info=True)
+        await update.inline_query.answer([])
+
+# ====================== HANDLER فایل (بروزرسانی) ======================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = update.effective_user
@@ -232,69 +277,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** ذخیره شد.", parse_mode="Markdown")
 
-# ====================== INLINE QUERY (بهبود یافته با لاگ کامل) ======================
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.inline_query.query.lower().strip()
-    user_id = update.inline_query.from_user.id
-    results = []
-    
-    logger.info(f"Inline query from user {user_id} | query: '{query_text}'")
-    
-    try:
-        files = await get_user_files(user_id)
-        logger.info(f"Found {len(files)} files for user {user_id}")
-        
-        for row in files:
-            try:
-                db_id = str(row['id'])
-                file_id = row['file_id']
-                ftype = row['file_type']
-                file_name = row.get('file_name', 'file')
-                
-                cnames = json.loads(row.get('custom_names') or '[]')
-                if not cnames:
-                    cnames = [file_name]
-                
-                title = cnames[0]
-                search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
-                
-                if query_text and query_text not in search_text:
-                    continue
-
-                if ftype == "photo":
-                    results.append(InlineQueryResultCachedPhoto(id=db_id, photo_file_id=file_id, title=title))
-                elif ftype == "video":
-                    results.append(InlineQueryResultCachedVideo(id=db_id, video_file_id=file_id, title=title))
-                elif ftype == "voice":
-                    results.append(InlineQueryResultCachedVoice(id=db_id, voice_file_id=file_id, title=title))
-                elif ftype == "audio":
-                    results.append(InlineQueryResultCachedAudio(
-                        id=db_id,
-                        audio_file_id=file_id,
-                        title=title
-                    ))
-                else:
-                    results.append(InlineQueryResultCachedDocument(
-                        id=db_id,
-                        document_file_id=file_id,
-                        title=title
-                    ))
-                
-                logger.debug(f"Added to results: {title} ({ftype})")
-
-            except Exception as e:
-                logger.warning(f"Error processing file {row.get('id')} (type={row.get('file_type')}): {e}")
-                continue
-                
-        final_results = results[:50]
-        logger.info(f"Returning {len(final_results)} results")
-        await update.inline_query.answer(final_results, cache_time=5, is_personal=True)
-        
-    except Exception as e:
-        logger.error(f"Critical inline query error: {e}", exc_info=True)
-        await update.inline_query.answer([])
-
-# ====================== توابع منو و حالت‌ها (بدون تغییر از نسخه‌ی کامل) ======================
+# ====================== توابع منو و حالت‌ها (اضافه شده از کد قدیمی) ======================
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str):
     msg = get_msg(update)
     if not msg:
@@ -469,11 +452,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         await show_myfiles_page(update, context, int(data[5:]))
 
+# ====================== HANDLE MESSAGE (ترکیبی از قدیم و جدید) ======================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     text = message.text or message.caption or ""
 
+    # دکمه‌های Back و Done
     if text.strip() == "Back":
         await go_back(update, context)
         return
@@ -482,12 +467,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await enter_state(update, context, "main")
             return
 
+    # اگر فایل ارسال شده باشد، به handle_file بسپار
+    if message.photo or message.video or message.audio or message.voice or message.document:
+        await handle_file(update, context)
+        return
+
+    # ثبت کاربر و بررسی عضویت
     await record_user(user.id)
     if not await check_membership(context.bot, user.id):
         await message.reply_text("Please join @dilemmapl first.")
         return
 
     state = context.user_data.get('state', 'main')
+
+    # مدیریت حالت‌های مختلف (از کد قدیمی)
     if state == "main":
         if text == "New File":
             context.user_data['nav_history'] = context.user_data.get('nav_history', []) + ["main"]
@@ -499,7 +492,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             size = await get_user_total_size(user.id)
             await message.reply_text(f"Total storage: {human_readable_size(size)}", reply_markup=MAIN_KEYBOARD)
     elif state == "awaiting_rename_text":
-        # Handle rename
         new_name = text.strip()
         rename_id = context.user_data.get('rename_id')
         if rename_id:
@@ -515,7 +507,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "main")
     elif state == "awaiting_addname_text":
-        # Handle add name
         new_name = text.strip()
         addname_id = context.user_data.get('addname_id')
         if addname_id:
@@ -539,7 +530,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("Please send a non-empty search term.")
     elif state == "awaiting_broadcast_message":
         if update.effective_user.id == ADMIN_ID:
-            # Broadcast
             user_ids = await get_all_user_ids()
             success = 0
             for uid in user_ids:
@@ -554,6 +544,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await message.reply_text("Unknown command. Use /start.", reply_markup=MAIN_KEYBOARD)
 
+# ====================== MAIN (ترکیبی از قدیم و جدید) ======================
 async def main():
     global ptb_app
     await get_pool()
@@ -561,7 +552,7 @@ async def main():
     ptb_app.add_error_handler(error_handler)
     await ptb_app.initialize()
 
-    # Command handlers
+    # فرمان‌ها (از کد قدیمی)
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("help", help_command))
     ptb_app.add_handler(CommandHandler("myfiles", lambda u,c: enter_state(u,c,"myfiles_list")))
@@ -569,13 +560,13 @@ async def main():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
 
-    # Inline query
+    # Inline query (بروزرسانی شده)
     ptb_app.add_handler(InlineQueryHandler(inline_query))
 
-    # Callback query
+    # Callback query (از کد قدیمی)
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
 
-    # Message handlers: text (excluding commands) and files
+    # هندلرهای پیام (بروزرسانی شده)
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
 
