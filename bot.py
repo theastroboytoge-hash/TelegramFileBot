@@ -553,11 +553,12 @@ async def webhook(request: Request):
         await ptb_app.process_update(update)
     return {"status": "ok"}
 
-# ====================== MAIN (ترکیبی از قدیم و جدید) ======================
+# ====================== MAIN (با غیرفعال کردن Updater) ======================
 async def main():
     global ptb_app
     await get_pool()
-    ptb_app = Application.builder().token(TOKEN).build()
+    # ساخت Application بدون Updater (برای وب‌هوک)
+    ptb_app = Application.builder().token(TOKEN).updater(None).build()
     ptb_app.add_error_handler(error_handler)
 
     # فرمان‌ها (از کد قدیمی)
@@ -578,11 +579,11 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
 
-    # تنظیم وب‌هوک (بدون نیاز به initialize)
+    # تنظیم وب‌هوک
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
 
-    # راه‌اندازی سرور FastAPI با uvicorn
+    # راه‌اندازی سرور FastAPI
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
