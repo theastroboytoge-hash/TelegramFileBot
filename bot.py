@@ -544,13 +544,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await message.reply_text("Unknown command. Use /start.", reply_markup=MAIN_KEYBOARD)
 
+# ====================== روت وب‌هوک در FastAPI ======================
+@app.post(WEBHOOK_PATH)
+async def webhook(request: Request):
+    data = await request.json()
+    if ptb_app:
+        update = Update.de_json(data, ptb_app.bot)
+        await ptb_app.process_update(update)
+    return {"status": "ok"}
+
 # ====================== MAIN (ترکیبی از قدیم و جدید) ======================
 async def main():
     global ptb_app
     await get_pool()
     ptb_app = Application.builder().token(TOKEN).build()
     ptb_app.add_error_handler(error_handler)
-    await ptb_app.initialize()
 
     # فرمان‌ها (از کد قدیمی)
     ptb_app.add_handler(CommandHandler("start", start))
@@ -570,9 +578,11 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
 
+    # تنظیم وب‌هوک (بدون نیاز به initialize)
     await ptb_app.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
 
+    # راه‌اندازی سرور FastAPI با uvicorn
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
