@@ -553,13 +553,18 @@ async def webhook(request: Request):
         await ptb_app.process_update(update)
     return {"status": "ok"}
 
-# ====================== MAIN (با غیرفعال کردن Updater) ======================
+# ====================== MAIN (با مقداردهی اولیه) ======================
 async def main():
     global ptb_app
     await get_pool()
     # ساخت Application بدون Updater (برای وب‌هوک)
     ptb_app = Application.builder().token(TOKEN).updater(None).build()
     ptb_app.add_error_handler(error_handler)
+
+    # مقداردهی اولیه (الزامی برای نسخه‌های جدید)
+    await ptb_app.initialize()
+    # شروع (اختیاری، ولی برای ایمنی فراخوانی می‌شود)
+    await ptb_app.start()
 
     # فرمان‌ها (از کد قدیمی)
     ptb_app.add_handler(CommandHandler("start", start))
