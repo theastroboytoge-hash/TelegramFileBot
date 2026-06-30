@@ -300,7 +300,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== INLINE QUERY بهبود یافته ====================
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.inline_query.query.lower().strip()
     user_id = update.inline_query.from_user.id
     results = []
