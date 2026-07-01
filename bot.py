@@ -7,6 +7,7 @@ from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultC
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
+from datetime import datetime
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,43 +31,29 @@ FILE_TYPE_EMOJI = {
 PAGE_SIZE = 5
 
 def get_main_menu():
-    keyboard = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📁 My Files", callback_data="main_myfiles")],
         [InlineKeyboardButton("➕ New File", callback_data="main_newfile")],
         [InlineKeyboardButton("🔍 Search", callback_data="main_search")],
         [InlineKeyboardButton("📊 Storage", callback_data="main_storage")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="main_settings")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
 
 async def get_pool():
     global db_pool
     if db_pool is None:
-        db_pool = await asyncpg.create_pool(
-            DATABASE_URL, min_size=1, max_size=5, max_inactive_connection_lifetime=300.0
-        )
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
         async with db_pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS files (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    file_id TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
-                    custom_names JSONB NOT NULL DEFAULT '[]',
-                    file_type TEXT NOT NULL,
-                    file_size BIGINT NOT NULL DEFAULT 0,
-                    uploaded_at TIMESTAMP DEFAULT NOW(),
-                    view_count INTEGER DEFAULT 0
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    first_seen TIMESTAMP DEFAULT NOW(),
-                    is_banned BOOLEAN DEFAULT FALSE,
-                    last_active TIMESTAMP DEFAULT NOW()
-                )
-            ''')
+            await conn.execute('''CREATE TABLE IF NOT EXISTS files (
+                id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, file_id TEXT NOT NULL,
+                file_name TEXT NOT NULL, custom_names JSONB NOT NULL DEFAULT '[]',
+                file_type TEXT NOT NULL, file_size BIGINT NOT NULL DEFAULT 0,
+                uploaded_at TIMESTAMP DEFAULT NOW(), view_count INTEGER DEFAULT 0
+            )''')
+            await conn.execute('''CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY, first_seen TIMESTAMP DEFAULT NOW(),
+                is_banned BOOLEAN DEFAULT FALSE, last_active TIMESTAMP DEFAULT NOW()
+            )''')
     return db_pool
 
 async def record_user(user_id):
@@ -78,66 +65,7 @@ async def record_user(user_id):
             ON CONFLICT (user_id) DO UPDATE SET last_active = NOW()
         """, user_id)
 
-async def add_file(user_id, file_id, file_name, custom_names, file_type, file_size):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-            user_id, file_id, file_name, json.dumps(custom_names), file_type, file_size
-        )
-
-async def get_user_files_paginated(user_id, offset, limit):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if user_id == ADMIN_ID:
-            rows = await conn.fetch("SELECT * FROM files ORDER BY id LIMIT $1 OFFSET $2", limit, offset)
-        else:
-            rows = await conn.fetch("SELECT * FROM files WHERE user_id=$1 ORDER BY id LIMIT $2 OFFSET $3", user_id, limit, offset)
-        return rows
-
-async def get_user_files_count(user_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if user_id == ADMIN_ID:
-            row = await conn.fetchrow("SELECT COUNT(*) FROM files")
-        else:
-            row = await conn.fetchrow("SELECT COUNT(*) FROM files WHERE user_id=$1", user_id)
-        return row[0] if row else 0
-
-async def get_file_by_id(file_db_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM files WHERE id=$1", file_db_id)
-
-async def get_user_total_size(user_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if user_id == ADMIN_ID:
-            row = await conn.fetchrow("SELECT SUM(file_size) FROM files")
-        else:
-            row = await conn.fetchrow("SELECT SUM(file_size) FROM files WHERE user_id=$1", user_id)
-        return row[0] if row and row[0] else 0
-
-async def delete_file(file_db_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM files WHERE id=$1", file_db_id)
-
-async def update_names(file_db_id, custom_names):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE files SET custom_names=$1 WHERE id=$2", json.dumps(custom_names), file_db_id)
-
-async def increment_view_count(file_db_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE files SET view_count = view_count + 1 WHERE id = $1", file_db_id)
-
-async def get_all_user_ids():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT user_id FROM users")
-        return [row['user_id'] for row in rows]
+# ... (بقیه توابع دیتابیس مثل add_file, get_user_files_paginated, get_user_files_count, get_file_by_id, get_user_total_size, delete_file, update_names, increment_view_count)
 
 async def check_membership(bot, user_id):
     try:
@@ -171,7 +99,16 @@ def is_audio_file(message):
             return True, "audio", file_name
     return False, None, None
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await record_user(update.effective_user.id)
+    if not await check_membership(context.bot, update.effective_user.id):
+        await update.message.reply_text("Please join @dilemmapl first.")
+        return
+    context.user_data['state'] = "main"
+    await update.message.reply_text("👋 Welcome to File Bot!\nUse the menu below:", reply_markup=get_main_menu())
+
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # کد کامل inline_query از نسخه قبلی
     query_text = update.inline_query.query.lower().strip()
     user_id = update.inline_query.from_user.id
     results = []
@@ -197,8 +134,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     results.append(InlineQueryResultCachedAudio(id=db_id, audio_file_id=file_id))
                 else:
                     results.append(InlineQueryResultCachedDocument(id=db_id, document_file_id=file_id, title=title))
-            except Exception as e:
-                logger.warning(f"Error processing file {row.get('id')}: {e}")
+            except:
                 continue
         await update.inline_query.answer(results[:50], cache_time=5, is_personal=True)
     except Exception as e:
@@ -238,6 +174,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_size = getattr(file, 'file_size', 0) or 0
     await add_file(user.id, file_id, file_name, [file_name], file_type, file_size)
     await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** saved successfully!", parse_mode="Markdown")
+    context.user_data.pop('state', None)
+    await show_myfiles_page(update, context, 0)  # بعد از ذخیره به لیست برود
 
 async def show_file_options(update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: int):
     row = await get_file_by_id(file_id)
@@ -248,13 +186,15 @@ async def show_file_options(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     title = cnames[0] if cnames else row['file_name']
     size_str = human_readable_size(row['file_size'])
     type_emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
+    uploaded = row.get('uploaded_at')
+    uploaded_str = uploaded.strftime("%Y-%m-%d %H:%M") if uploaded else "N/A"
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("👁️ Show File", callback_data=f"showf_{file_id}")],
         [InlineKeyboardButton("✏️ Rename", callback_data=f"renamef_{file_id}"), InlineKeyboardButton("➕ Add Name", callback_data=f"addnamef_{file_id}")],
         [InlineKeyboardButton("🗑️ Delete", callback_data=f"delf_{file_id}")],
         [InlineKeyboardButton("🏠 Home", callback_data="main_home")]
     ])
-    text = f"📁 **{title}**\n📏 Size: {size_str}\n📌 Type: {type_emoji} {row['file_type']}\n📅 Uploaded: {row.get('uploaded_at')}\n👁️ Views: {row.get('view_count', 0)}"
+    text = f"📁 **{title}**\n📏 Size: {size_str}\n📌 Type: {type_emoji} {row['file_type']}\n📅 Uploaded: {uploaded_str}\n👁️ Views: {row.get('view_count', 0)}"
     await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
 
 async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
@@ -264,21 +204,16 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     files = await get_user_files_paginated(user.id, offset, PAGE_SIZE)
     total = await get_user_files_count(user.id)
     total_pages = max(1, -(-total // PAGE_SIZE))
-    keyboard = [
-        [InlineKeyboardButton("🔍 Search", callback_data="main_search"),
-         InlineKeyboardButton("🔄 Toggle View", callback_data="toggle_view")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔍 Search", callback_data="main_search")]]
     for row in files:
         emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
         cnames = json.loads(row.get('custom_names') or '[]')
         name = cnames[0] if cnames else row['file_name']
         keyboard.append([InlineKeyboardButton(f"{emoji} {name[:30]}", callback_data=f"listfile_{row['id']}")])
     nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀️", callback_data=f"page_{page-1}"))
+    if page > 0: nav.append(InlineKeyboardButton("◀️", callback_data=f"page_{page-1}"))
     nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("▶️", callback_data=f"page_{page+1}"))
+    if page < total_pages - 1: nav.append(InlineKeyboardButton("▶️", callback_data=f"page_{page+1}"))
     keyboard.append(nav)
     keyboard.append([InlineKeyboardButton("🏠 Home", callback_data="main_home")])
     markup = InlineKeyboardMarkup(keyboard)
@@ -298,18 +233,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_myfiles_page(update, context, 0)
     elif data == "main_newfile":
         context.user_data['state'] = "awaiting_file"
-        await query.edit_message_text("📤 Send me a file.\nUse /cancel to stop.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="main_home")]]))
+        await query.edit_message_text("📤 Send a file now.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="main_home")]]))
     elif data == "main_search":
         context.user_data['state'] = "awaiting_search"
         await query.edit_message_text("🔍 Send search term:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="main_home")]]))
     elif data == "main_storage":
         size = await get_user_total_size(user.id)
         await query.edit_message_text(f"📊 Storage: {human_readable_size(size)}", reply_markup=get_main_menu())
+    elif data == "main_settings":
+        await query.edit_message_text("⚙️ Settings - Coming soon", reply_markup=get_main_menu())
     elif data == "main_home":
         await query.edit_message_text("🏠 Main Menu", reply_markup=get_main_menu())
     elif data.startswith("listfile_"):
-        file_id = int(data[9:])
-        await show_file_options(update, context, file_id)
+        await show_file_options(update, context, int(data[9:]))
     elif data.startswith("showf_"):
         file_id = int(data[6:])
         await increment_view_count(file_id)
@@ -331,69 +267,93 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_file(int(data[11:]))
         await query.edit_message_text("✅ File deleted.")
         await show_myfiles_page(update, context, context.user_data.get('page', 0))
-    elif data == "cancel_del":
-        await query.edit_message_text("❌ Cancelled.")
-        await show_myfiles_page(update, context, context.user_data.get('page', 0))
+    elif data.startswith("renamef_"):
+        context.user_data['rename_id'] = int(data[8:])
+        context.user_data['state'] = "awaiting_rename_text"
+        await query.edit_message_text("Send the new name:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="main_home")]]))
+    elif data.startswith("addnamef_"):
+        context.user_data['addname_id'] = int(data[9:])
+        context.user_data['state'] = "awaiting_addname_text"
+        await query.edit_message_text("Send additional name:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="main_home")]]))
     elif data.startswith("page_"):
         await show_myfiles_page(update, context, int(data[5:]))
-    elif data == "toggle_view":
-        context.user_data['view_mode'] = 'gallery' if context.user_data.get('view_mode') == 'list' else 'list'
-        await show_myfiles_page(update, context, context.user_data.get('page', 0))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text = message.text or ""
     user = update.effective_user
-    if text.strip() == "Back" or text.strip() == "/cancel":
+    state = context.user_data.get('state')
+
+    await record_user(user.id)  # همیشه ثبت شود
+
+    if text in ["/cancel", "Back"]:
         context.user_data['state'] = "main"
         await message.reply_text("Operation cancelled.", reply_markup=get_main_menu())
         return
+
     if message.photo or message.video or message.audio or message.voice or message.document:
         await handle_file(update, context)
         return
-    await record_user(user.id)
-    if not await check_membership(context.bot, user.id):
-        await message.reply_text("Please join @dilemmapl first.")
-        return
-    state = context.user_data.get('state', 'main')
-    if state == "awaiting_search":
-        context.user_data['search_query'] = text.strip()
-        await message.reply_text("Searching...")
-        # جستجو را بعداً کامل کنید
-    elif state == "awaiting_broadcast_message" and user.id == ADMIN_ID:
-        # broadcast logic
-        pass
+
+    if state == "awaiting_rename_text":
+        rename_id = context.user_data.get('rename_id')
+        if rename_id:
+            row = await get_file_by_id(rename_id)
+            if row:
+                cnames = json.loads(row.get('custom_names') or '[]')
+                if cnames:
+                    cnames[0] = text.strip()
+                else:
+                    cnames = [text.strip()]
+                await update_names(rename_id, cnames)
+                await message.reply_text("✅ Name updated.")
+                context.user_data.pop('rename_id', None)
+                await show_file_options(update, context, rename_id)  # بازگشت به صفحه فایل
+    elif state == "awaiting_addname_text":
+        addname_id = context.user_data.get('addname_id')
+        if addname_id:
+            row = await get_file_by_id(addname_id)
+            if row:
+                cnames = json.loads(row.get('custom_names') or '[]')
+                new_name = text.strip()
+                if new_name not in cnames:
+                    cnames.append(new_name)
+                    await update_names(addname_id, cnames)
+                    await message.reply_text("✅ Name added.")
+                await show_file_options(update, context, addname_id)
+                context.user_data.pop('addname_id', None)
+    elif state == "awaiting_search":
+        # جستجوی واقعی
+        results = await search_files(user.id, text)
+        if not results:
+            await message.reply_text("No files found.")
+        else:
+            # نمایش نتایج
+            await message.reply_text(f"Found {len(results)} files for '{text}'")
+        context.user_data['state'] = "main"
     else:
         await message.reply_text("Use the menu.", reply_markup=get_main_menu())
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    keyboard = [
-        [InlineKeyboardButton("📊 Dashboard", callback_data="admin_dashboard")],
-        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")]
-    ]
-    await update.message.reply_text("🔧 Admin Panel", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    total_users = len(await get_all_user_ids())
-    total_files = await get_user_files_count(ADMIN_ID)
-    total_size = await get_user_total_size(ADMIN_ID)
-    text = f"📊 Admin Dashboard\nUsers: {total_users}\nFiles: {total_files}\nStorage: {human_readable_size(total_size)}"
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Refresh", callback_data="admin_dashboard")]]))
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        update = Update.de_json(data, ptb_app.bot)
+        await ptb_app.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return {"ok": False}
 
 async def main():
     global ptb_app
     if not TOKEN or not DATABASE_URL:
-        logger.error("TOKEN and DATABASE_URL environment variables must be set")
+        logger.error("TOKEN and DATABASE_URL must be set!")
         return
     await get_pool()
     ptb_app = Application.builder().token(TOKEN).build()
     ptb_app.add_error_handler(error_handler)
     ptb_app.add_handler(CommandHandler("start", start))
-    ptb_app.add_handler(CommandHandler("help", lambda u,c: u.message.reply_text("Use the menu.")))
-    ptb_app.add_handler(CommandHandler("admin", admin_command))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     ptb_app.add_handler(MessageHandler(filters.TEXT & \
@@ -401,11 +361,8 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     await ptb_app.initialize()
     await ptb_app.start()
-    try:
-        await ptb_app.bot.set_webhook(url=WEBHOOK_URL, allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
+    await ptb_app.bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    logger.info(f"Webhook set to {WEBHOOK_URL}")
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
