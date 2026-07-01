@@ -396,7 +396,8 @@ async def main():
     ptb_app.add_handler(CommandHandler("admin", admin_command))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \
+                                       filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     await ptb_app.initialize()
     await ptb_app.start()
