@@ -17,13 +17,16 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_USERNAME = "@dilemmapl"
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
-# دریافت آدرس کامل از متغیر استاندارد Render
+
+# ---------- اصلاح اول: تعریف WEBHOOK_URL با استفاده از RENDER_EXTERNAL_URL ----------
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 if RENDER_EXTERNAL_URL:
     WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 else:
-    # در صورتی که متغیر موجود نباشد (مثلاً برای تست لوکال)
-    WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-app.onrender.com')}{WEBHOOK_PATH}"DATABASE_URL = os.getenv("DATABASE_URL")
+    # fallback برای مواقعی که متغیر موجود نباشد (مثلاً لوکال)
+    WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-app.onrender.com')}{WEBHOOK_PATH}"
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
 ptb_app = None
@@ -960,11 +963,13 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
-if webhook_set:
-    logger.info(f"✅ Webhook successfully set to {WEBHOOK_URL}")
-else:
-    logger.error(f"❌ Failed to set webhook to {WEBHOOK_URL}")
+    # ---------- اصلاح دوم: لاگ‌گیری نتیجهٔ تنظیم Webhook ----------
+    webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
+    if webhook_set:
+        logger.info(f"✅ Webhook successfully set to {WEBHOOK_URL}")
+    else:
+        logger.error(f"❌ Failed to set webhook to {WEBHOOK_URL}")
+
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
