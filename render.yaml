@@ -1,14 +1,21 @@
 services:
   - type: web
-    name: dilemmapl-bot
-    env: python
+    name: your-bot-name
+    runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: uvicorn bot:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: TOKEN
         sync: false
       - key: ADMIN_ID
         sync: false
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: your-db-name
+          property: connectionString
+      - key: RENDER_EXTERNAL_HOSTNAME
+        fromService:
+          name: your-bot-name
+          type: web
+          property: host
