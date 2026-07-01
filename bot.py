@@ -7,7 +7,6 @@ from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultC
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
-from datetime import datetime
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,16 +43,20 @@ async def get_pool():
     if db_pool is None:
         db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
         async with db_pool.acquire() as conn:
-            await conn.execute('''CREATE TABLE IF NOT EXISTS files (
-                id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, file_id TEXT NOT NULL,
-                file_name TEXT NOT NULL, custom_names JSONB NOT NULL DEFAULT '[]',
-                file_type TEXT NOT NULL, file_size BIGINT NOT NULL DEFAULT 0,
-                uploaded_at TIMESTAMP DEFAULT NOW(), view_count INTEGER DEFAULT 0
-            )''')
-            await conn.execute('''CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY, first_seen TIMESTAMP DEFAULT NOW(),
-                is_banned BOOLEAN DEFAULT FALSE, last_active TIMESTAMP DEFAULT NOW()
-            )''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS files (
+                    id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, file_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL, custom_names JSONB NOT NULL DEFAULT '[]',
+                    file_type TEXT NOT NULL, file_size BIGINT NOT NULL DEFAULT 0,
+                    uploaded_at TIMESTAMP DEFAULT NOW(), view_count INTEGER DEFAULT 0
+                )
+            ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY, first_seen TIMESTAMP DEFAULT NOW(),
+                    is_banned BOOLEAN DEFAULT FALSE, last_active TIMESTAMP DEFAULT NOW()
+                )
+            ''')
     return db_pool
 
 async def record_user(user_id):
@@ -65,7 +68,58 @@ async def record_user(user_id):
             ON CONFLICT (user_id) DO UPDATE SET last_active = NOW()
         """, user_id)
 
-# ... (بقیه توابع دیتابیس مثل add_file, get_user_files_paginated, get_user_files_count, get_file_by_id, get_user_total_size, delete_file, update_names, increment_view_count)
+async def add_file(user_id, file_id, file_name, custom_names, file_type, file_size):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id, file_id, file_name, json.dumps(custom_names), file_type, file_size
+        )
+
+async def get_user_files_paginated(user_id, offset, limit):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if user_id == ADMIN_ID:
+            return await conn.fetch("SELECT * FROM files ORDER BY id LIMIT $1 OFFSET $2", limit, offset)
+        return await conn.fetch("SELECT * FROM files WHERE user_id=$1 ORDER BY id LIMIT $2 OFFSET $3", user_id, limit, offset)
+
+async def get_user_files_count(user_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if user_id == ADMIN_ID:
+            row = await conn.fetchrow("SELECT COUNT(*) FROM files")
+        else:
+            row = await conn.fetchrow("SELECT COUNT(*) FROM files WHERE user_id=$1", user_id)
+        return row[0] if row else 0
+
+async def get_file_by_id(file_db_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM files WHERE id=$1", file_db_id)
+
+async def get_user_total_size(user_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if user_id == ADMIN_ID:
+            row = await conn.fetchrow("SELECT SUM(file_size) FROM files")
+        else:
+            row = await conn.fetchrow("SELECT SUM(file_size) FROM files WHERE user_id=$1", user_id)
+        return row[0] if row and row[0] else 0
+
+async def delete_file(file_db_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM files WHERE id=$1", file_db_id)
+
+async def update_names(file_db_id, custom_names):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE files SET custom_names=$1 WHERE id=$2", json.dumps(custom_names), file_db_id)
+
+async def increment_view_count(file_db_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE files SET view_count = view_count + 1 WHERE id = $1", file_db_id)
 
 async def check_membership(bot, user_id):
     try:
@@ -99,16 +153,7 @@ def is_audio_file(message):
             return True, "audio", file_name
     return False, None, None
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await record_user(update.effective_user.id)
-    if not await check_membership(context.bot, update.effective_user.id):
-        await update.message.reply_text("Please join @dilemmapl first.")
-        return
-    context.user_data['state'] = "main"
-    await update.message.reply_text("👋 Welcome to File Bot!\nUse the menu below:", reply_markup=get_main_menu())
-
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # کد کامل inline_query از نسخه قبلی
     query_text = update.inline_query.query.lower().strip()
     user_id = update.inline_query.from_user.id
     results = []
@@ -175,7 +220,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await add_file(user.id, file_id, file_name, [file_name], file_type, file_size)
     await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** saved successfully!", parse_mode="Markdown")
     context.user_data.pop('state', None)
-    await show_myfiles_page(update, context, 0)  # بعد از ذخیره به لیست برود
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await record_user(update.effective_user.id)
+    if not await check_membership(context.bot, update.effective_user.id):
+        await update.message.reply_text("Please join @dilemmapl first.")
+        return
+    context.user_data['state'] = "main"
+    await update.message.reply_text("👋 Welcome to File Bot!\nUse the menu below:", reply_markup=get_main_menu())
 
 async def show_file_options(update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: int):
     row = await get_file_by_id(file_id)
@@ -186,15 +238,13 @@ async def show_file_options(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     title = cnames[0] if cnames else row['file_name']
     size_str = human_readable_size(row['file_size'])
     type_emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
-    uploaded = row.get('uploaded_at')
-    uploaded_str = uploaded.strftime("%Y-%m-%d %H:%M") if uploaded else "N/A"
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("👁️ Show File", callback_data=f"showf_{file_id}")],
         [InlineKeyboardButton("✏️ Rename", callback_data=f"renamef_{file_id}"), InlineKeyboardButton("➕ Add Name", callback_data=f"addnamef_{file_id}")],
         [InlineKeyboardButton("🗑️ Delete", callback_data=f"delf_{file_id}")],
         [InlineKeyboardButton("🏠 Home", callback_data="main_home")]
     ])
-    text = f"📁 **{title}**\n📏 Size: {size_str}\n📌 Type: {type_emoji} {row['file_type']}\n📅 Uploaded: {uploaded_str}\n👁️ Views: {row.get('view_count', 0)}"
+    text = f"📁 **{title}**\n📏 Size: {size_str}\n📌 Type: {type_emoji} {row['file_type']}"
     await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
 
 async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
@@ -284,13 +334,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     state = context.user_data.get('state')
 
-    await record_user(user.id)  # همیشه ثبت شود
-
-    if text in ["/cancel", "Back"]:
-        context.user_data['state'] = "main"
-        await message.reply_text("Operation cancelled.", reply_markup=get_main_menu())
-        return
-
     if message.photo or message.video or message.audio or message.voice or message.document:
         await handle_file(update, context)
         return
@@ -308,7 +351,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update_names(rename_id, cnames)
                 await message.reply_text("✅ Name updated.")
                 context.user_data.pop('rename_id', None)
-                await show_file_options(update, context, rename_id)  # بازگشت به صفحه فایل
+                context.user_data['state'] = "main"
     elif state == "awaiting_addname_text":
         addname_id = context.user_data.get('addname_id')
         if addname_id:
@@ -320,16 +363,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     cnames.append(new_name)
                     await update_names(addname_id, cnames)
                     await message.reply_text("✅ Name added.")
-                await show_file_options(update, context, addname_id)
                 context.user_data.pop('addname_id', None)
+                context.user_data['state'] = "main"
     elif state == "awaiting_search":
-        # جستجوی واقعی
-        results = await search_files(user.id, text)
-        if not results:
-            await message.reply_text("No files found.")
-        else:
-            # نمایش نتایج
-            await message.reply_text(f"Found {len(results)} files for '{text}'")
+        # جستجوی ساده
+        await message.reply_text(f"🔍 Search results for '{text}' (basic version)")
         context.user_data['state'] = "main"
     else:
         await message.reply_text("Use the menu.", reply_markup=get_main_menu())
@@ -356,8 +394,7 @@ async def main():
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     await ptb_app.initialize()
     await ptb_app.start()
