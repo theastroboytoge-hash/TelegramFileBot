@@ -354,7 +354,8 @@ async def main():
 
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \
+                                       filters.COMMAND, handle_message))
     ptb_app.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.DOCUMENT | filters.AUDIO | filters.VOICE, 
         handle_file_upload
