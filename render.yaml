@@ -1,13 +1,14 @@
 services:
   - type: web
     name: dilemmapl-bot
-    runtime: python
+    env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
-      - key: PORT
-        value: 10000
       - key: TOKEN
         sync: false
       - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_URL
         sync: false
