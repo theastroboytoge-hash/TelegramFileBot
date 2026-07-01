@@ -18,12 +18,11 @@ CHANNEL_USERNAME = "@dilemmapl"
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 
-# ---------- اصلاح اول: تعریف WEBHOOK_URL با استفاده از RENDER_EXTERNAL_URL ----------
+# اصلاح آدرس Webhook با استفاده از متغیر استاندارد Render
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 if RENDER_EXTERNAL_URL:
     WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 else:
-    # fallback برای مواقعی که متغیر موجود نباشد (مثلاً لوکال)
     WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'your-app.onrender.com')}{WEBHOOK_PATH}"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -203,12 +202,12 @@ def get_msg(update: Update):
 
 # ---------- UI Helpers ----------
 def get_main_menu_keyboard():
+    # گزینه Settings حذف شد
     keyboard = [
         [InlineKeyboardButton("📁 My Files", callback_data="myfiles")],
         [InlineKeyboardButton("➕ New File", callback_data="newfile")],
         [InlineKeyboardButton("🔍 Search", callback_data="search")],
-        [InlineKeyboardButton("📊 Memory", callback_data="memory")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
+        [InlineKeyboardButton("📊 Memory", callback_data="memory")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -325,16 +324,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** saved.", parse_mode="Markdown")
-    # Return to main after upload
     await enter_state(update, context, "main")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
-    """Main function to navigate to a state, updating the main message."""
     user_data = context.user_data
     user_data['state'] = state
 
-    # Determine breadcrumb and keyboard
     if state == "main":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Welcome! Choose an option:"
@@ -345,7 +341,6 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         reply_markup = get_cancel_keyboard()
     elif state == "myfiles":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}]
-        # Will be built by show_myfiles_page
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
         return
     elif state == "file_options":
@@ -392,7 +387,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
     elif state == "search_results":
         await show_search_results(update, context)
         return
-    elif state == "settings":
+    elif state == "settings":  # این بخش دیگر قابل دسترس نیست ولی برای جلوگیری از خطا نگه داشته شده
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "⚙️ Settings", "callback": "settings"}]
         page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
         view_mode = user_data.get('view_mode', 'list')
@@ -408,16 +403,13 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         text = "Send the message to broadcast to all users:"
         reply_markup = get_back_home_keyboard()
     else:
-        # fallback
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Unknown state. Go to main."
         reply_markup = get_main_menu_keyboard()
 
-    # Update or send message
     await update_main_message(update, context, text, reply_markup, breadcrumb)
 
 async def update_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text, reply_markup, breadcrumb=None):
-    """Update the main message (edit or send new)."""
     user_data = context.user_data
     chat_id = user_data.get('main_chat_id')
     message_id = user_data.get('main_message_id')
@@ -439,7 +431,6 @@ async def update_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
-    # Send new
     msg = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=full_text,
@@ -450,7 +441,6 @@ async def update_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_data['main_message_id'] = msg.message_id
 
 async def answer_callback(update: Update, text, show_alert=False):
-    """Send callback answer with toast."""
     if update.callback_query:
         await update.callback_query.answer(text, show_alert=show_alert)
 
@@ -458,15 +448,13 @@ async def answer_callback(update: Update, text, show_alert=False):
 async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     user = update.effective_user
     user_data = context.user_data
-    # Get filters
     file_type_filter = user_data.get('filter_type', None)
-    date_filter = user_data.get('filter_date', None)  # e.g., 'today', 'week', 'month'
+    date_filter = user_data.get('filter_date', None)
     page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
     view_mode = user_data.get('view_mode', 'list')
     selected = user_data.get('selected_files', set())
     selection_mode = user_data.get('selection_mode', False)
 
-    # Compute date range
     date_from = None
     date_to = None
     if date_filter == 'today':
@@ -481,10 +469,8 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     total = await get_user_files_count_filtered(user.id, file_type_filter, date_from, date_to)
     total_pages = max(1, (total + page_size - 1) // page_size)
 
-    # Build keyboard
     keyboard = []
 
-    # Filter row
     filter_buttons = []
     if file_type_filter:
         filter_buttons.append(InlineKeyboardButton(f"❌ Filter: {file_type_filter}", callback_data="clear_filter"))
@@ -494,11 +480,9 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         filter_buttons.append(InlineKeyboardButton(f"📅 {date_filter}", callback_data="clear_date"))
     keyboard.append(filter_buttons)
 
-    # Selection mode toggle
     mode_text = "✅ Select Mode" if selection_mode else "☑️ Select Mode"
     keyboard.append([InlineKeyboardButton(mode_text, callback_data="toggle_selection_mode")])
 
-    # File list
     if not files:
         keyboard.append([InlineKeyboardButton("📭 No files", callback_data="noop")])
     else:
@@ -507,7 +491,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             name = json.loads(row['custom_names'])[0]
             file_id = row['id']
             if selection_mode:
-                # Show checkbox
                 checked = "✅" if file_id in selected else "⬜"
                 label = f"{checked} {emoji} {name}"
                 callback = f"toggle_select_{file_id}"
@@ -516,7 +499,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 callback = f"listfile_{file_id}"
             keyboard.append([InlineKeyboardButton(label, callback_data=callback)])
 
-    # Batch actions (visible only in selection mode and if selected)
     if selection_mode and selected:
         row = []
         if len(selected) > 0:
@@ -525,10 +507,8 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         row.append(InlineKeyboardButton("🔄 Clear", callback_data="clear_selection"))
         keyboard.append(row)
 
-    # Pagination
     if total_pages > 1:
         nav_buttons = []
-        # Show up to 7 page numbers
         start_page = max(0, page - 3)
         end_page = min(total_pages, page + 4)
         if start_page > 0:
@@ -544,13 +524,11 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             nav_buttons.append(InlineKeyboardButton(str(total_pages), callback_data=f"myfiles_page_{total_pages-1}"))
         keyboard.append(nav_buttons)
 
-    # Page size and view mode
     keyboard.append([
         InlineKeyboardButton(f"📏 {page_size}", callback_data="change_pagesize"),
         InlineKeyboardButton("🔄 View", callback_data="toggle_view")
     ])
 
-    # Bottom: Back/Home
     keyboard.append([
         InlineKeyboardButton("🔙 Back", callback_data="back_to_main"),
         InlineKeyboardButton("🏠 Home", callback_data="home")
@@ -558,7 +536,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Breadcrumb
     breadcrumb = [
         {"label": "🏠 Main", "callback": "home"},
         {"label": "📁 My Files", "callback": "myfiles"}
@@ -575,7 +552,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     await update_main_message(update, context, text, reply_markup, breadcrumb)
 
-    # Store state
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
@@ -614,7 +590,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
 
     if data == "home":
-        user_data.clear()  # reset all temporary data
+        user_data.clear()
         await enter_state(update, context, "main")
     elif data == "back_to_main":
         await enter_state(update, context, "main")
@@ -635,22 +611,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "memory":
         size = await get_user_total_size(user.id)
         await answer_callback(update, f"Total storage: {human_readable_size(size)}")
-        # Show main menu after a moment? We'll just keep current.
-    elif data == "settings":
-        await enter_state(update, context, "settings")
+    elif data == "settings":  # اگر کسی از طریق لینک مستقیم وارد شد، به خانه برگردان
+        await enter_state(update, context, "main")
 
-    # ---------- My Files pagination ----------
     elif data.startswith("myfiles_page_"):
         page = int(data.split("_")[-1])
         await show_myfiles_page(update, context, page)
 
-    # ---------- List file (open options) ----------
     elif data.startswith("listfile_"):
         file_id = int(data[9:])
         user_data['current_file_id'] = file_id
         await enter_state(update, context, "file_options")
 
-    # ---------- File actions ----------
     elif data.startswith("showf_"):
         file_id = int(data[6:])
         row = await get_file_by_id(file_id)
@@ -691,7 +663,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['addname_id'] = int(data[9:])
         await enter_state(update, context, "awaiting_addname_text")
 
-    # ---------- Selection mode ----------
     elif data == "toggle_selection_mode":
         user_data['selection_mode'] = not user_data.get('selection_mode', False)
         if not user_data['selection_mode']:
@@ -721,7 +692,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "batch_addtag":
         selected = user_data.get('selected_files', set())
         if selected:
-            # Ask for tag via message
             user_data['batch_tag_files'] = list(selected)
             user_data['state'] = "awaiting_batch_tag"
             await update_main_message(update, context, "Send the tag name to add to all selected files:",
@@ -730,7 +700,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await answer_callback(update, "No files selected.")
 
-    # ---------- Filters ----------
     elif data == "filter_menu":
         keyboard = [
             [InlineKeyboardButton("🖼 Photo", callback_data="filter_type_photo"),
@@ -758,34 +727,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['filter_date'] = None
         await show_myfiles_page(update, context, page=0)
 
-    # ---------- Settings ----------
     elif data == "change_pagesize":
-        # Cycle through options
         current = user_data.get('page_size', DEFAULT_PAGE_SIZE)
         idx = PAGE_SIZE_OPTIONS.index(current) if current in PAGE_SIZE_OPTIONS else 0
         new_size = PAGE_SIZE_OPTIONS[(idx + 1) % len(PAGE_SIZE_OPTIONS)]
         user_data['page_size'] = new_size
         await answer_callback(update, f"Page size set to {new_size}")
-        await enter_state(update, context, "settings")
+        # بعد از تغییر، صفحه فعلی را به‌روز کن
+        await show_myfiles_page(update, context, page=user_data.get('myfiles_page', 0))
     elif data == "toggle_view":
         current = user_data.get('view_mode', 'list')
         new_mode = 'gallery' if current == 'list' else 'list'
         user_data['view_mode'] = new_mode
         await answer_callback(update, f"View mode: {new_mode}")
-        await enter_state(update, context, "settings")
+        await show_myfiles_page(update, context, page=user_data.get('myfiles_page', 0))
 
-    # ---------- Broadcast ----------
     elif data == "broadcast":
         if user.id != ADMIN_ID:
             await answer_callback(update, "Admin only.")
             return
         await enter_state(update, context, "awaiting_broadcast_message")
 
-    # ---------- No-op ----------
     elif data == "noop":
         pass
 
-    # ---------- Fallback ----------
     else:
         logger.warning(f"Unknown callback: {data}")
 
@@ -795,12 +760,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text = message.text or message.caption or ""
 
-    # If file uploaded, handle
     if message.photo or message.video or message.audio or message.voice or message.document:
         await handle_file(update, context)
         return
 
-    # Record user and check membership
     await record_user(user.id)
     if not await check_membership(context.bot, user.id):
         await message.reply_text("Please join @dilemmapl first.")
@@ -809,7 +772,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state', 'main')
     user_data = context.user_data
 
-    # Handle text inputs for specific states
     if state == "awaiting_rename_text":
         new_name = text.strip()
         rename_id = user_data.get('rename_id')
@@ -886,7 +848,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("Please send a non-empty tag.")
         return
 
-    # If no state matched, show main
     await enter_state(update, context, "main")
 
 # ---------- Start & Commands ----------
@@ -897,7 +858,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please join @dilemmapl first.")
         return
 
-    # First time tour
     if 'first_start' not in context.user_data:
         context.user_data['first_start'] = True
         welcome_text = (
@@ -963,7 +923,6 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # ---------- اصلاح دوم: لاگ‌گیری نتیجهٔ تنظیم Webhook ----------
     webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
     if webhook_set:
         logger.info(f"✅ Webhook successfully set to {WEBHOOK_URL}")
