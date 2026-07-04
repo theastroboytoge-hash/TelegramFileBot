@@ -37,7 +37,7 @@ FILE_TYPE_EMOJI = {
 PAGE_SIZE_OPTIONS = [5, 10, 20]
 DEFAULT_PAGE_SIZE = 5
 
-# ---------- Database ----------
+# ---------- Database Functions ----------
 async def get_pool():
     global db_pool
     if db_pool is None:
@@ -167,6 +167,12 @@ async def update_names(file_db_id, custom_names):
     async with pool.acquire() as conn:
         await conn.execute("UPDATE files SET custom_names=$1 WHERE id=$2", json.dumps(custom_names), file_db_id)
 
+async def update_file_name(file_db_id, new_name):
+    """Update the file_name field in database"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE files SET file_name=$1 WHERE id=$2", new_name, file_db_id)
+
 async def get_all_user_ids():
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -265,6 +271,7 @@ def is_audio_file(message):
     return False, None, None
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle file upload with temporary name"""
     message = update.message
     user = update.effective_user
     state = context.user_data.get('state')
@@ -272,8 +279,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state != "awaiting_file":
         return
 
+    # Check membership
+    if not await check_membership(context.bot, user.id):
+        await message.reply_text("Please join @dilemmapl first.")
+        return
+
     is_audio, file_type, original_name = is_audio_file(message)
 
+    # Detect file type
     if message.photo:
         file_type = "photo"
         file = message.photo[-1]
@@ -289,11 +302,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif is_audio:
         file_type = "audio"
         file = message.audio or message.document
-        file_name = original_name
+        file_name = original_name or "audio.mp3"
     elif message.document:
         file_type = "document"
         file = message.document
-        file_name = message.document.file_name or "document"
+        file_name = message.document.file_name or "document.pdf"
     else:
         await message.reply_text("This file type is not supported.")
         return
@@ -301,27 +314,45 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
 
-    await add_file(
-        user_id=user.id,
-        file_id=file_id,
-        file_name=file_name,
-        custom_names=[file_name],
-        file_type=file_type,
-        file_size=file_size
-    )
-
-    # دریافت آخرین فایل
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        last_file = await conn.fetchrow(
-            "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", user.id
+    # Use temporary name (will be updated after user provides custom name)
+    temp_name = f"temp_{datetime.now().timestamp()}_{file_name}"
+    
+    try:
+        # Save file with temporary name and empty custom_names
+        await add_file(
+            user_id=user.id,
+            file_id=file_id,
+            file_name=temp_name,
+            custom_names=[],  # Start with empty custom names
+            file_type=file_type,
+            file_size=file_size
         )
-        if last_file:
-            context.user_data['pending_name_file_id'] = last_file['id']
-            context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
-            logger.info(f"New file uploaded. Pending name for id: {last_file['id']} - Type: {file_type}")
 
-    await enter_state(update, context, "awaiting_custom_name")
+        # Get the saved file ID
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            last_file = await conn.fetchrow(
+                "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", 
+                user.id
+            )
+            if last_file:
+                file_db_id = last_file['id']
+                context.user_data['pending_name_file_id'] = file_db_id
+                context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
+                context.user_data['pending_original_name'] = file_name
+                logger.info(f"New file uploaded with temp name. DB ID: {file_db_id}, Type: {file_type}, Original: {file_name}")
+            else:
+                await message.reply_text("❌ Error saving file. Please try again.")
+                await enter_state(update, context, "main")
+                return
+
+        # Ask for custom name
+        await enter_state(update, context, "awaiting_custom_name")
+        
+    except Exception as e:
+        logger.error(f"Error in handle_file: {e}", exc_info=True)
+        await message.reply_text("❌ Error saving file. Please try again.")
+        await enter_state(update, context, "main")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
@@ -339,7 +370,8 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
     elif state == "awaiting_custom_name":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "➕ New File", "callback": "newfile"}]
         emoji = user_data.get('pending_file_emoji', '📄')
-        text = f"{emoji} File received!\n\nPlease send a name for this file:"
+        original_name = user_data.get('pending_original_name', 'file')
+        text = f"{emoji} File received!\n\nOriginal name: {original_name}\n\nPlease send a name for this file:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     elif state == "myfiles":
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
@@ -355,7 +387,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
             await enter_state(update, context, "myfiles")
             return
         cnames = json.loads(row['custom_names'])
-        title = cnames[0]
+        title = cnames[0] if cnames else row['file_name']
         size_str = human_readable_size(row['file_size'])
         type_emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
         breadcrumb = [
@@ -465,7 +497,8 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     else:
         for row in files:
             emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
-            name = json.loads(row['custom_names'])[0]
+            cnames = json.loads(row['custom_names'])
+            name = cnames[0] if cnames else row['file_name']
             file_id = row['id']
             if selection_mode:
                 checked = "✅" if file_id in selected else "⬜"
@@ -547,7 +580,8 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = []
     for row in results:
         emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
-        name = json.loads(row['custom_names'])[0]
+        cnames = json.loads(row['custom_names'])
+        name = cnames[0] if cnames else row['file_name']
         keyboard.append([InlineKeyboardButton(f"{emoji} {name}", callback_data=f"listfile_{row['id']}")])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_search")])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -729,100 +763,207 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text = message.text or message.caption or ""
 
-    if message.photo or message.video or message.audio or message.voice or message.document:
-        await handle_file(update, context)
-        return
-
+    # Record user
     await record_user(user.id)
+
+    # Check membership for non-command messages
     if not await check_membership(context.bot, user.id):
         await message.reply_text("Please join @dilemmapl first.")
+        return
+
+    # Handle file uploads
+    if message.photo or message.video or message.audio or message.voice or message.document:
+        await handle_file(update, context)
         return
 
     state = context.user_data.get('state', 'main')
     user_data = context.user_data
 
+    # Handle custom name after file upload
     if state == "awaiting_custom_name":
         custom_name = text.strip()
-        file_id = user_data.pop('pending_name_file_id', None)
-        emoji = user_data.pop('pending_file_emoji', '📄')
         
-        if file_id and custom_name:
-            try:
-                await update_names(file_id, [custom_name])
-                await message.reply_text(f"✅ {emoji} File saved successfully with name: **{custom_name}**", parse_mode="Markdown")
-                logger.info(f"✅ Custom name '{custom_name}' successfully saved for file_id {file_id}")
-            except Exception as e:
-                logger.error(f"Failed to save custom name: {e}")
-                await message.reply_text("❌ Error saving the name. Please try again.")
-        else:
-            await message.reply_text("No pending file found.")
+        if not custom_name:
+            await message.reply_text("❌ Please send a valid name.")
+            return
         
-        await enter_state(update, context, "main")
+        file_db_id = user_data.get('pending_name_file_id')
+        file_emoji = user_data.get('pending_file_emoji', '📄')
+        
+        if not file_db_id:
+            await message.reply_text("❌ No pending file found. Please upload a file first.")
+            await enter_state(update, context, "main")
+            return
+        
+        try:
+            # Verify file exists
+            row = await get_file_by_id(file_db_id)
+            if not row:
+                await message.reply_text("❌ File not found in database. Please try again.")
+                user_data.pop('pending_name_file_id', None)
+                user_data.pop('pending_file_emoji', None)
+                await enter_state(update, context, "main")
+                return
+            
+            # Update custom_names with the new name
+            await update_names(file_db_id, [custom_name])
+            
+            # Also update the file_name field with the custom name
+            await update_file_name(file_db_id, custom_name)
+            
+            logger.info(f"✅ Successfully saved custom name '{custom_name}' for file ID {file_db_id}")
+            
+            # Show success message
+            await message.reply_text(
+                f"✅ {file_emoji} File saved successfully with name: **{custom_name}**",
+                parse_mode="Markdown"
+            )
+            
+            # Clear pending data
+            user_data.pop('pending_name_file_id', None)
+            user_data.pop('pending_file_emoji', None)
+            user_data.pop('pending_original_name', None)
+            
+            # Go back to main menu
+            await enter_state(update, context, "main")
+            
+        except Exception as e:
+            logger.error(f"Error saving custom name: {e}", exc_info=True)
+            await message.reply_text(f"❌ Error saving the name: {str(e)}. Please try again.")
+        
         return
 
-    # بقیه حالت‌ها (rename, addname, search و ...)
+    # Handle rename text
     if state == "awaiting_rename_text":
         new_name = text.strip()
         rename_id = user_data.get('rename_id')
-        if rename_id:
+        
+        if not rename_id:
+            await message.reply_text("❌ No file selected for rename.")
+            await enter_state(update, context, "main")
+            return
+        
+        try:
             row = await get_file_by_id(rename_id)
-            if row:
-                cnames = json.loads(row['custom_names'])
-                if cnames:
-                    cnames[0] = new_name
-                else:
-                    cnames = [new_name]
-                await update_names(rename_id, cnames)
-                await answer_callback(update, "Name updated.")
-                user_data.pop('rename_id', None)
-                await enter_state(update, context, "file_options")
+            if not row:
+                await message.reply_text("❌ File not found.")
+                await enter_state(update, context, "myfiles")
+                return
+            
+            cnames = json.loads(row['custom_names'])
+            if cnames:
+                cnames[0] = new_name
+            else:
+                cnames = [new_name]
+            
+            await update_names(rename_id, cnames)
+            await update_file_name(rename_id, new_name)  # Also update file_name
+            
+            await answer_callback(update, "✅ Name updated successfully.")
+            user_data.pop('rename_id', None)
+            await enter_state(update, context, "file_options")
+            
+        except Exception as e:
+            logger.error(f"Error in rename: {e}")
+            await message.reply_text(f"❌ Error renaming: {str(e)}")
+        
         return
 
-    elif state == "awaiting_addname_text":
+    # Handle add name text
+    if state == "awaiting_addname_text":
         new_name = text.strip()
         addname_id = user_data.get('addname_id')
-        if addname_id:
+        
+        if not addname_id:
+            await message.reply_text("❌ No file selected.")
+            await enter_state(update, context, "main")
+            return
+        
+        try:
             row = await get_file_by_id(addname_id)
-            if row:
-                cnames = json.loads(row['custom_names'])
-                if new_name not in cnames:
-                    cnames.append(new_name)
-                    await update_names(addname_id, cnames)
-                    await answer_callback(update, "Name added.")
-                else:
-                    await message.reply_text("Name already exists.")
-                user_data.pop('addname_id', None)
-                await enter_state(update, context, "file_options")
+            if not row:
+                await message.reply_text("❌ File not found.")
+                await enter_state(update, context, "myfiles")
+                return
+            
+            cnames = json.loads(row['custom_names'])
+            if new_name not in cnames:
+                cnames.append(new_name)
+                await update_names(addname_id, cnames)
+                await answer_callback(update, f"✅ Name '{new_name}' added.")
+            else:
+                await message.reply_text("❌ Name already exists.")
+            
+            user_data.pop('addname_id', None)
+            await enter_state(update, context, "file_options")
+            
+        except Exception as e:
+            logger.error(f"Error adding name: {e}")
+            await message.reply_text(f"❌ Error adding name: {str(e)}")
+        
         return
 
-    elif state == "awaiting_search":
+    # Handle search
+    if state == "awaiting_search":
         query = text.strip()
         if query:
             user_data['search_query'] = query
             await enter_state(update, context, "search_results")
         else:
-            await message.reply_text("Please send a non-empty search term.")
+            await message.reply_text("❌ Please send a non-empty search term.")
         return
 
-    elif state == "awaiting_broadcast_message":
-        if user.id == ADMIN_ID:
+    # Handle broadcast (admin only)
+    if state == "awaiting_broadcast_message":
+        if user.id != ADMIN_ID:
+            await message.reply_text("⛔ You are not authorized to broadcast.")
+            await enter_state(update, context, "main")
+            return
+        
+        broadcast_text = text
+        try:
             user_ids = await get_all_user_ids()
-            success = 0
+            success_count = 0
+            fail_count = 0
+            
             for uid in user_ids:
                 try:
-                    await context.bot.send_message(uid, text)
-                    success += 1
-                    await asyncio.sleep(0.05)
-                except:
-                    pass
-            await message.reply_text(f"Broadcast sent to {success} users.")
+                    await context.bot.send_message(uid, broadcast_text)
+                    success_count += 1
+                    await asyncio.sleep(0.05)  # Rate limiting
+                except Exception as e:
+                    logger.warning(f"Failed to send broadcast to {uid}: {e}")
+                    fail_count += 1
+            
+            await message.reply_text(
+                f"📢 Broadcast sent!\n\n"
+                f"✅ Sent to: {success_count} users\n"
+                f"❌ Failed: {fail_count} users"
+            )
             await enter_state(update, context, "main")
+            
+        except Exception as e:
+            logger.error(f"Broadcast error: {e}")
+            await message.reply_text(f"❌ Error sending broadcast: {str(e)}")
+        
         return
 
-    elif state == "awaiting_batch_tag":
+    # Handle batch tag
+    if state == "awaiting_batch_tag":
         tag = text.strip()
-        if tag:
-            file_ids = user_data.get('batch_tag_files', [])
+        file_ids = user_data.get('batch_tag_files', [])
+        
+        if not tag:
+            await message.reply_text("❌ Please send a non-empty tag.")
+            return
+        
+        if not file_ids:
+            await message.reply_text("❌ No files selected for tagging.")
+            await enter_state(update, context, "myfiles")
+            return
+        
+        try:
+            success_count = 0
             for fid in file_ids:
                 row = await get_file_by_id(fid)
                 if row:
@@ -830,19 +971,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if tag not in cnames:
                         cnames.append(tag)
                         await update_names(fid, cnames)
+                        success_count += 1
+            
             user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag '{tag}' added to {len(file_ids)} files.", True)
+            await answer_callback(update, f"✅ Tag '{tag}' added to {success_count} files.", True)
             await enter_state(update, context, "myfiles", page=user_data.get('myfiles_page', 0))
-        else:
-            await message.reply_text("Please send a non-empty tag.")
+            
+        except Exception as e:
+            logger.error(f"Error adding batch tag: {e}")
+            await message.reply_text(f"❌ Error adding tag: {str(e)}")
+        
         return
 
+    # Default: Go to main menu
     await enter_state(update, context, "main")
 
 # ---------- Start & Commands ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await record_user(user.id)
+    
     if not await check_membership(context.bot, user.id):
         await update.message.reply_text("Please join @dilemmapl first.")
         return
@@ -865,7 +1013,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user.id)
-    await update.message.reply_text("Use the menu buttons.\nInline search: @botusername query", parse_mode="Markdown")
+    help_text = (
+        "📚 **Help Menu**\n\n"
+        "Use the menu buttons below to navigate:\n"
+        "• 📁 My Files - View and manage your files\n"
+        "• ➕ New File - Upload a new file\n"
+        "• 🔍 Search - Search your files\n"
+        "• 📊 Memory - View storage statistics\n\n"
+        "**Inline Search:**\n"
+        "Type @botusername in any chat to search and send your files.\n\n"
+        "**Commands:**\n"
+        "/start - Start the bot\n"
+        "/help - Show this help\n"
+        "/cancel - Cancel current operation"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -873,14 +1035,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
     await enter_state(update, context, "awaiting_broadcast_message")
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
     user_ids = await get_all_user_ids()
-    await update.message.reply_text(f"Total users: {len(user_ids)}")
+    await update.message.reply_text(f"👥 Total users: {len(user_ids)}")
 
 # ---------- Webhook & FastAPI ----------
 @app.post(WEBHOOK_PATH)
@@ -890,6 +1054,10 @@ async def webhook(request: Request):
         update = Update.de_json(data, ptb_app.bot)
         await ptb_app.process_update(update)
     return {"status": "ok"}
+
+@app.get("/")
+async def root():
+    return {"status": "Bot is running", "webhook": WEBHOOK_URL}
 
 # ---------- Main ----------
 async def main():
@@ -901,24 +1069,33 @@ async def main():
     await ptb_app.initialize()
     await ptb_app.start()
 
+    # Add command handlers
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("help", help_command))
     ptb_app.add_handler(CommandHandler("cancel", cancel))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
 
+    # Add other handlers
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
-    ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, 
+        handle_file
+    ))
+    ptb_app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_message
+    ))
 
+    # Set webhook
     webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
     if webhook_set:
         logger.info(f"✅ Webhook successfully set to {WEBHOOK_URL}")
     else:
         logger.error(f"❌ Failed to set webhook to {WEBHOOK_URL}")
 
+    # Run server
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
     server = uvicorn.Server(config)
     await server.serve()
