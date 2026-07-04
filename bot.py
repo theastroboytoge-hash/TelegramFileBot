@@ -267,10 +267,6 @@ def is_audio_file(message):
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = update.effective_user
-    state = context.user_data.get('state')
-
-    if state != "awaiting_file":
-        return
 
     is_audio, file_type, original_name = is_audio_file(message)
 
@@ -295,8 +291,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = message.document
         file_name = message.document.file_name or "document"
     else:
-        await message.reply_text("This file type is not supported.")
-        return
+        return  # فایل پشتیبانی نشده
 
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
@@ -317,11 +312,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", user.id
         )
         if last_file:
-            context.user_data['pending_name_file_id'] = last_file['id']
-            context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
-            logger.info(f"New file uploaded. Pending name for id: {last_file['id']}")
+            context.user_data['current_file_id'] = last_file['id']
+            logger.info(f"File saved automatically. ID: {last_file['id']} - Name: {file_name}")
 
-    await enter_state(update, context, "awaiting_custom_name")
+    # مستقیم برو به پنل مدیریت فایل
+    await enter_state(update, context, "file_options")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
@@ -332,27 +327,18 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Welcome! Choose an option:"
         reply_markup = get_main_menu_keyboard()
-    elif state == "awaiting_file":
-        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "➕ New File", "callback": "newfile"}]
-        text = "Send a file or press Cancel."
-        reply_markup = get_cancel_keyboard()
-    elif state == "awaiting_custom_name":
-        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "➕ New File", "callback": "newfile"}]
-        emoji = user_data.get('pending_file_emoji', '📄')
-        text = f"{emoji} File received!\n\nPlease send a name for this file:"
-        reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     elif state == "myfiles":
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
         return
     elif state == "file_options":
         file_id = user_data.get('current_file_id')
         if not file_id:
-            await enter_state(update, context, "myfiles")
+            await enter_state(update, context, "main")
             return
         row = await get_file_by_id(file_id)
         if not row:
             await answer_callback(update, "File not found.", True)
-            await enter_state(update, context, "myfiles")
+            await enter_state(update, context, "main")
             return
         cnames = json.loads(row['custom_names'] or '[]')
         title = cnames[0] if cnames else row['file_name']
@@ -434,7 +420,7 @@ async def answer_callback(update: Update, text, show_alert=False):
     if update.callback_query:
         await update.callback_query.answer(text, show_alert=show_alert)
 
-# ---------- My Files Page & Search (بدون تغییر اساسی) ----------
+# ---------- My Files Page ----------
 async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     user = update.effective_user
     user_data = context.user_data
@@ -578,7 +564,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "search_results")
 
     elif data == "newfile":
-        await enter_state(update, context, "awaiting_file")
+        await enter_state(update, context, "main")  # دیگر نیازی به حالت awaiting_file نیست
     elif data == "myfiles":
         await enter_state(update, context, "myfiles", page=0)
     elif data == "search":
@@ -648,6 +634,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['addname_id'] = int(data[9:])
         await enter_state(update, context, "awaiting_addname_text")
 
+    # ... (بقیه callbackها بدون تغییر)
     elif data == "toggle_selection_mode":
         user_data['selection_mode'] = not user_data.get('selection_mode', False)
         if not user_data['selection_mode']:
@@ -732,29 +719,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get('state', 'main')
 
-    # === نام‌گذاری اولیه بعد از آپلود ===
-    if state == "awaiting_custom_name":
-        custom_name = text
-        file_id = context.user_data.pop('pending_name_file_id', None)
-        emoji = context.user_data.pop('pending_file_emoji', '📄')
-        
-        if file_id and custom_name:
-            try:
-                await update_names(file_id, [custom_name])
-                logger.info(f"Custom name saved: {custom_name} for file {file_id}")
-                await message.reply_text(f"✅ {emoji} File saved with name: **{custom_name}**", parse_mode="Markdown")
-                
-                # === مهم: مستقیم برو به پنل فایل ===
-                context.user_data['current_file_id'] = file_id
-                await enter_state(update, context, "file_options")
-                return
-            except Exception as e:
-                logger.error(f"Failed to save custom name: {e}")
-                await message.reply_text("❌ Error saving the name.")
-        
-        await enter_state(update, context, "main")
-        return
-
     # Rename
     if state == "awaiting_rename_text":
         new_name = text
@@ -788,7 +752,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await enter_state(update, context, "file_options")
         return
 
-    # بقیه حالت‌ها
     elif state == "awaiting_search":
         if text:
             context.user_data['search_query'] = text
@@ -807,15 +770,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag added.", True)
+            await answer_callback(update, f"Tag added to files.", True)
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
         return
 
-    # آپلود فایل
-    if message.photo or message.video or message.audio or message.voice or message.document:
-        await handle_file(update, context)
-        return
-
+    # اگر پیام متنی معمولی بود → به منوی اصلی برو
     await record_user(user.id)
     if not await check_membership(context.bot, user.id):
         await message.reply_text("Please join @dilemmapl first.")
@@ -835,12 +794,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['first_start'] = True
         welcome_text = (
             "👋 Welcome to FileManager Bot!\n\n"
-            "I can store your files and let you search them inline.\n"
-            "Here's how to start:\n"
-            "1️⃣ Tap '➕ New File' to upload a file.\n"
-            "2️⃣ Tap '📁 My Files' to manage your files.\n"
-            "3️⃣ Use inline search by typing @botusername in any chat.\n\n"
-            "Let's get started!"
+            "Just send any file and I'll save it automatically.\n"
+            "You can then rename, delete or view it."
         )
         await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
         context.user_data['state'] = "main"
@@ -849,7 +804,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user.id)
-    await update.message.reply_text("Use the menu buttons.\nInline search: @botusername query", parse_mode="Markdown")
+    await update.message.reply_text("Just send any file.\nUse menu for other options.", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -893,6 +848,8 @@ async def main():
 
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # همه فایل‌ها را بگیر
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     ptb_app.add_handler(MessageHandler(filters.TEXT & \
                                        filters.COMMAND, handle_message))
