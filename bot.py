@@ -132,15 +132,6 @@ async def get_file_by_id(file_db_id):
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM files WHERE id=$1", file_db_id)
 
-async def get_user_total_size(user_id):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if user_id == ADMIN_ID:
-            row = await conn.fetchrow("SELECT SUM(file_size) FROM files")
-        else:
-            row = await conn.fetchrow("SELECT SUM(file_size) FROM files WHERE user_id=$1", user_id)
-        return row[0] if row[0] else 0
-
 async def get_user_file_stats(user_id):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -314,11 +305,12 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[file_name],
+        custom_names=[file_name],   # اسم اولیه
         file_type=file_type,
         file_size=file_size
     )
 
+    # دریافت آخرین فایل ذخیره شده
     pool = await get_pool()
     async with pool.acquire() as conn:
         last_file = await conn.fetchrow(
@@ -327,6 +319,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if last_file:
             context.user_data['pending_name_file_id'] = last_file['id']
             context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
+            logger.info(f"File saved with temp id: {last_file['id']} for user {user.id}")
 
     await enter_state(update, context, "awaiting_custom_name")
 
@@ -600,7 +593,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
             if not stats:
                 msg += "No files yet."
-            # ارسال پیام جداگانه برای Memory
             await context.bot.send_message(user.id, msg, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Memory error: {e}")
@@ -613,7 +605,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("listfile_"):
         file_id = int(data[9:])
         user_data['current_file_id'] = file_id
-        # مستقیم ویرایش پیام اصلی
         await enter_state(update, context, "file_options")
 
     elif data.startswith("showf_"):
@@ -752,14 +743,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "awaiting_custom_name":
         custom_name = text.strip()
-        file_id = user_data.get('pending_name_file_id')
+        file_id = user_data.pop('pending_name_file_id', None)   # pop برای جلوگیری از استفاده دوباره
         if file_id and custom_name:
-            row = await get_file_by_id(file_id)
-            if row:
+            try:
                 await update_names(file_id, [custom_name])
                 await message.reply_text(f"✅ File saved with name: **{custom_name}**", parse_mode="Markdown")
-                user_data.pop('pending_name_file_id', None)
-                user_data.pop('pending_file_emoji', None)
+                logger.info(f"Custom name '{custom_name}' saved for file_id {file_id}")
+            except Exception as e:
+                logger.error(f"Error saving custom name: {e}")
+                await message.reply_text("Error saving name. Please try again.")
+        else:
+            await message.reply_text("No pending file found.")
         await enter_state(update, context, "main")
         return
 
@@ -912,8 +906,7 @@ async def main():
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
 
     webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
     if webhook_set:
