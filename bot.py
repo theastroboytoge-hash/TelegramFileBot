@@ -319,7 +319,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size=file_size
     )
 
-    # Get the last inserted file id
     pool = await get_pool()
     async with pool.acquire() as conn:
         last_file = await conn.fetchrow(
@@ -327,7 +326,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if last_file:
             context.user_data['pending_name_file_id'] = last_file['id']
-            context.user_data['pending_file_type'] = file_type
             context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
 
     await enter_state(update, context, "awaiting_custom_name")
@@ -351,7 +349,6 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         text = f"{emoji} File received!\n\nPlease send a name for this file:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     elif state == "myfiles":
-        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}]
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
         return
     elif state == "file_options":
@@ -450,7 +447,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_data = context.user_data
     file_type_filter = user_data.get('filter_type', None)
     page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
-    view_mode = user_data.get('view_mode', 'list')
     selected = user_data.get('selected_files', set())
     selection_mode = user_data.get('selection_mode', False)
 
@@ -569,10 +565,11 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ---------- Callback Handlers ----------
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
     user = update.effective_user
     user_data = context.user_data
+
+    await query.answer()
 
     if data == "home":
         user_data.clear()
@@ -593,16 +590,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "search":
         await enter_state(update, context, "awaiting_search")
     elif data == "memory":
-        total_files, total_size, stats = await get_user_file_stats(user.id)
-        msg = f"📊 **Storage Statistics**\n\n"
-        msg += f"Total Files: {total_files}\n"
-        msg += f"Total Size: {human_readable_size(total_size)}\n\n"
-        for ftype, data in stats.items():
-            emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
-            msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
-        if not stats:
-            msg += "No files yet."
-        await answer_callback(update, msg, show_alert=True)
+        try:
+            total_files, total_size, stats = await get_user_file_stats(user.id)
+            msg = f"📊 **Storage Statistics**\n\n"
+            msg += f"Total Files: {total_files}\n"
+            msg += f"Total Size: {human_readable_size(total_size)}\n\n"
+            for ftype, data in stats.items():
+                emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
+                msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
+            if not stats:
+                msg += "No files yet."
+            # ارسال پیام جداگانه برای Memory
+            await context.bot.send_message(user.id, msg, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Memory error: {e}")
+            await answer_callback(update, "Error retrieving statistics.", True)
 
     elif data.startswith("myfiles_page_"):
         page = int(data.split("_")[-1])
@@ -611,6 +613,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("listfile_"):
         file_id = int(data[9:])
         user_data['current_file_id'] = file_id
+        # مستقیم ویرایش پیام اصلی
         await enter_state(update, context, "file_options")
 
     elif data.startswith("showf_"):
@@ -756,7 +759,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update_names(file_id, [custom_name])
                 await message.reply_text(f"✅ File saved with name: **{custom_name}**", parse_mode="Markdown")
                 user_data.pop('pending_name_file_id', None)
-                user_data.pop('pending_file_type', None)
                 user_data.pop('pending_file_emoji', None)
         await enter_state(update, context, "main")
         return
