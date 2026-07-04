@@ -72,13 +72,19 @@ async def record_user(user_id):
     async with pool.acquire() as conn:
         await conn.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
 
+# ---------- مهم: حالا id برگردانده می‌شود ----------
 async def add_file(user_id, file_id, file_name, custom_names, file_type, file_size):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
+        row = await conn.fetchrow(
+            """
+            INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+            """,
             user_id, file_id, file_name, json.dumps(custom_names), file_type, file_size
         )
+        return row['id'] if row else None
 
 async def get_user_files(user_id):
     pool = await get_pool()
@@ -291,25 +297,32 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
 
-    await add_file(
+    # ذخیره فایل و گرفتن id
+    db_id = await add_file(
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[],   # خالی شروع می‌شود
+        custom_names=[],
         file_type=file_type,
         file_size=file_size
     )
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        last_file = await conn.fetchrow(
-            "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", user.id
-        )
-        if last_file:
-            context.user_data['current_file_id'] = last_file['id']
+    if db_id:
+        context.user_data['current_file_id'] = db_id
+        logger.info(f"File saved with id: {db_id} for user {user.id}")
+    else:
+        logger.error("Failed to save file - no id returned")
+        await message.reply_text("❌ Error saving file.")
+        return
 
     await message.reply_text("✅ File saved!\nUse 'Add Tag' to set a name.", parse_mode="Markdown")
-    await enter_state(update, context, "file_options")
+    
+    # نمایش پنل ویرایش
+    try:
+        await enter_state(update, context, "file_options")
+    except Exception as e:
+        logger.error(f"Error showing file options after save: {e}", exc_info=True)
+        await message.reply_text("File saved, but couldn't open options panel.")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
@@ -400,6 +413,7 @@ async def update_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
+    # ارسال پیام جدید
     msg = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=full_text,
@@ -505,7 +519,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         text += f"\n🔘 Selection mode: {len(selected)} selected"
 
     await update_main_message(update, context, text, reply_markup, breadcrumb)
-
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
@@ -625,6 +638,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['addname_id'] = int(data[9:])
         await enter_state(update, context, "awaiting_addname_text")
 
+    # ... (بقیه callbackها بدون تغییر باقی می‌مانند)
     elif data == "toggle_selection_mode":
         user_data['selection_mode'] = not user_data.get('selection_mode', False)
         if not user_data['selection_mode']:
@@ -721,9 +735,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     cnames = [new_name]
                 await update_names(rename_id, cnames)
-                await answer_callback(update, "✅ Name changed successfully!")
+                await message.reply_text(f"✅ Name changed successfully to:\n**{new_name}**", parse_mode="Markdown")
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "file_options")
+            else:
+                await message.reply_text("❌ File not found.")
         return
 
     elif state == "awaiting_addname_text":
@@ -736,7 +752,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if new_name not in cnames:
                     cnames.append(new_name)
                     await update_names(addname_id, cnames)
-                    await answer_callback(update, "✅ Tag added.")
+                    await message.reply_text(f"✅ Tag added: **{new_name}**", parse_mode="Markdown")
                 else:
                     await message.reply_text("This tag already exists.")
                 context.user_data.pop('addname_id', None)
@@ -761,7 +777,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag added.", True)
+            await message.reply_text(f"✅ Tag '{tag}' added to selected files.", parse_mode="Markdown")
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
         return
 
