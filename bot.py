@@ -226,7 +226,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ftype = row['file_type']
             cnames = json.loads(row.get('custom_names') or '[]')
             if not cnames:
-                continue  # اگر هیچ نامی ندارد، در اینلاین نشان نده
+                continue
             title = cnames[0]
             search_text = " ".join([n.lower() for n in cnames])
             if query_text and query_text not in search_text:
@@ -291,12 +291,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
 
-    # ذخیره با custom_names خالی (نام اصلی نشان داده نشود)
     await add_file(
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[],          # مهم: خالی
+        custom_names=[],   # خالی شروع می‌شود
         file_type=file_type,
         file_size=file_size
     )
@@ -308,9 +307,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if last_file:
             context.user_data['current_file_id'] = last_file['id']
-            logger.info(f"File saved with empty custom name. ID: {last_file['id']}")
 
-    await message.reply_text("✅ File saved successfully!\nNow you can add a name or manage it.", parse_mode="Markdown")
+    await message.reply_text("✅ File saved!\nUse 'Add Tag' to set a name.", parse_mode="Markdown")
     await enter_state(update, context, "file_options")
 
 # ---------- Core Navigation ----------
@@ -360,7 +358,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         reply_markup = get_back_home_keyboard(back_callback="back_to_file_options")
     elif state == "awaiting_addname_text":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "➕ Add Tag", "callback": "addname"}]
-        text = "Send additional tag/name (for search):"
+        text = "Send additional tag/name:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_file_options")
     elif state == "awaiting_search":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "🔍 Search", "callback": "search"}]
@@ -511,7 +509,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
-# ---------- Search Results ----------
 async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = context.user_data
@@ -713,9 +710,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state', 'main')
 
     if state == "awaiting_rename_text":
-        new_name = text
+        new_name = text.strip()
         rename_id = context.user_data.get('rename_id')
-        if rename_id:
+        if rename_id and new_name:
             row = await get_file_by_id(rename_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
@@ -724,15 +721,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     cnames = [new_name]
                 await update_names(rename_id, cnames)
-                await answer_callback(update, "✅ Main name updated!")
+                await answer_callback(update, "✅ Name changed successfully!")
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "file_options")
         return
 
     elif state == "awaiting_addname_text":
-        new_name = text
+        new_name = text.strip()
         addname_id = context.user_data.get('addname_id')
-        if addname_id:
+        if addname_id and new_name:
             row = await get_file_by_id(addname_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
@@ -753,7 +750,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif state == "awaiting_batch_tag":
-        tag = text
+        tag = text.strip()
         if tag:
             file_ids = context.user_data.get('batch_tag_files', [])
             for fid in file_ids:
@@ -764,7 +761,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag added to files.", True)
+            await answer_callback(update, f"Tag added.", True)
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
         return
 
@@ -783,13 +780,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please join @dilemmapl first.")
         return
 
-    welcome_text = "👋 Welcome!\nSend any file and I'll save it.\nThen add a name/tag for it."
+    welcome_text = "👋 Welcome!\nSend any file → Add Tag → Rename if needed."
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
     context.user_data['state'] = "main"
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user.id)
-    await update.message.reply_text("Send any file → Add Name/Tag → Rename if needed.", parse_mode="Markdown")
+    await update.message.reply_text("Send file → Add Tag → Rename", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
