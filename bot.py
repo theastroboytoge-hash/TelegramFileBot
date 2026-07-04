@@ -729,22 +729,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text = message.text or message.caption or ""
 
-    if message.photo or message.video or message.audio or message.voice or message.document:
-        await handle_file(update, context)
-        return
-
-    await record_user(user.id)
-    if not await check_membership(context.bot, user.id):
-        await message.reply_text("Please join @dilemmapl first.")
-        return
-
+    # === بخش مهم: اولویت دادن به حالت نام‌گذاری ===
     state = context.user_data.get('state', 'main')
-    user_data = context.user_data
 
     if state == "awaiting_custom_name":
         custom_name = text.strip()
-        file_id = user_data.pop('pending_name_file_id', None)
-        emoji = user_data.pop('pending_file_emoji', '📄')
+        file_id = context.user_data.pop('pending_name_file_id', None)
+        emoji = context.user_data.pop('pending_file_emoji', '📄')
         
         if file_id and custom_name:
             try:
@@ -760,7 +751,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "main")
         return
 
-    # بقیه حالت‌ها (rename, addname, search و ...)
+    # حالا فایل‌ها را چک کنیم
+    if message.photo or message.video or message.audio or message.voice or message.document:
+        await handle_file(update, context)
+        return
+
+    await record_user(user.id)
+    if not await check_membership(context.bot, user.id):
+        await message.reply_text("Please join @dilemmapl first.")
+        return
+
+    user_data = context.user_data
+
+    # بقیه حالت‌ها
     if state == "awaiting_rename_text":
         new_name = text.strip()
         rename_id = user_data.get('rename_id')
@@ -910,8 +913,7 @@ async def main():
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & \
-                                       filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
 
     webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
     if webhook_set:
