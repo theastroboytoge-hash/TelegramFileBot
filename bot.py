@@ -72,19 +72,13 @@ async def record_user(user_id):
     async with pool.acquire() as conn:
         await conn.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
 
-# ---------- مهم: حالا id برگردانده می‌شود ----------
 async def add_file(user_id, file_id, file_name, custom_names, file_type, file_size):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id
-            """,
+        await conn.execute(
+            "INSERT INTO files (user_id, file_id, file_name, custom_names, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
             user_id, file_id, file_name, json.dumps(custom_names), file_type, file_size
         )
-        return row['id'] if row else None
 
 async def get_user_files(user_id):
     pool = await get_pool()
@@ -201,6 +195,7 @@ def human_readable_size(size_bytes):
 def get_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("📁 My Files", callback_data="myfiles")],
+        [InlineKeyboardButton("➕ New File", callback_data="newfile")],
         [InlineKeyboardButton("🔍 Search", callback_data="search")],
         [InlineKeyboardButton("📊 Memory", callback_data="memory")]
     ]
@@ -230,11 +225,12 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db_id = str(row['id'])
             file_id = row['file_id']
             ftype = row['file_type']
+            file_name = row.get('file_name', 'file')
             cnames = json.loads(row.get('custom_names') or '[]')
             if not cnames:
-                continue
+                cnames = [file_name]
             title = cnames[0]
-            search_text = " ".join([n.lower() for n in cnames])
+            search_text = " ".join([n.lower() for n in cnames] + [file_name.lower()])
             if query_text and query_text not in search_text:
                 continue
             if ftype == "photo":
@@ -297,32 +293,26 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
 
-    # ذخیره فایل و گرفتن id
-    db_id = await add_file(
+    await add_file(
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[],
+        custom_names=[file_name],
         file_type=file_type,
         file_size=file_size
     )
 
-    if db_id:
-        context.user_data['current_file_id'] = db_id
-        logger.info(f"File saved with id: {db_id} for user {user.id}")
-    else:
-        logger.error("Failed to save file - no id returned")
-        await message.reply_text("❌ Error saving file.")
-        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        last_file = await conn.fetchrow(
+            "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", user.id
+        )
+        if last_file:
+            context.user_data['current_file_id'] = last_file['id']
+            logger.info(f"File saved. ID: {last_file['id']} - Name: {file_name}")
 
-    await message.reply_text("✅ File saved!\nUse 'Add Tag' to set a name.", parse_mode="Markdown")
-    
-    # نمایش پنل ویرایش
-    try:
-        await enter_state(update, context, "file_options")
-    except Exception as e:
-        logger.error(f"Error showing file options after save: {e}", exc_info=True)
-        await message.reply_text("File saved, but couldn't open options panel.")
+    await message.reply_text("✅ File saved successfully!", parse_mode="Markdown")
+    await enter_state(update, context, "file_options")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
@@ -347,7 +337,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
             await enter_state(update, context, "main")
             return
         cnames = json.loads(row['custom_names'] or '[]')
-        title = cnames[0] if cnames else "Untitled"
+        title = cnames[0] if cnames else row['file_name']
         size_str = human_readable_size(row['file_size'])
         type_emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
         breadcrumb = [
@@ -359,7 +349,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         keyboard = [
             [InlineKeyboardButton("👁 Show", callback_data=f"showf_{file_id}")],
             [InlineKeyboardButton("✏️ Rename", callback_data=f"renamef_{file_id}"),
-             InlineKeyboardButton("➕ Add Tag", callback_data=f"addnamef_{file_id}")],
+             InlineKeyboardButton("➕ Add Name", callback_data=f"addnamef_{file_id}")],
             [InlineKeyboardButton("🗑 Delete", callback_data=f"delf_{file_id}")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_to_myfiles"),
              InlineKeyboardButton("🏠 Home", callback_data="home")]
@@ -367,11 +357,11 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         reply_markup = InlineKeyboardMarkup(keyboard)
     elif state == "awaiting_rename_text":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "✏️ Rename", "callback": "rename"}]
-        text = "Send the new main name:"
+        text = "Send the new name for this file:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_file_options")
     elif state == "awaiting_addname_text":
-        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "➕ Add Tag", "callback": "addname"}]
-        text = "Send additional tag/name:"
+        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "➕ Add Name", "callback": "addname"}]
+        text = "Send additional name:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_file_options")
     elif state == "awaiting_search":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "🔍 Search", "callback": "search"}]
@@ -413,7 +403,6 @@ async def update_main_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
-    # ارسال پیام جدید
     msg = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=full_text,
@@ -459,7 +448,7 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         for row in files:
             emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
             cnames = json.loads(row['custom_names'] or '[]')
-            name = cnames[0] if cnames else "Untitled"
+            name = cnames[0] if cnames else row['file_name']
             file_id = row['id']
             if selection_mode:
                 checked = "✅" if file_id in selected else "⬜"
@@ -519,9 +508,11 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         text += f"\n🔘 Selection mode: {len(selected)} selected"
 
     await update_main_message(update, context, text, reply_markup, breadcrumb)
+
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
+# ---------- Search Results ----------
 async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = context.user_data
@@ -540,7 +531,7 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
     for row in results:
         emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
         cnames = json.loads(row['custom_names'] or '[]')
-        name = cnames[0] if cnames else "Untitled"
+        name = cnames[0] if cnames else row['file_name']
         keyboard.append([InlineKeyboardButton(f"{emoji} {name}", callback_data=f"listfile_{row['id']}")])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_search")])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -569,6 +560,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_search":
         await enter_state(update, context, "search_results")
 
+    elif data == "newfile":
+        await enter_state(update, context, "main")
     elif data == "myfiles":
         await enter_state(update, context, "myfiles", page=0)
     elif data == "search":
@@ -638,7 +631,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['addname_id'] = int(data[9:])
         await enter_state(update, context, "awaiting_addname_text")
 
-    # ... (بقیه callbackها بدون تغییر باقی می‌مانند)
     elif data == "toggle_selection_mode":
         user_data['selection_mode'] = not user_data.get('selection_mode', False)
         if not user_data['selection_mode']:
@@ -724,37 +716,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state', 'main')
 
     if state == "awaiting_rename_text":
-        new_name = text.strip()
+        new_name = text
         rename_id = context.user_data.get('rename_id')
-        if rename_id and new_name:
+        if rename_id:
             row = await get_file_by_id(rename_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
-                if cnames:
-                    cnames[0] = new_name
-                else:
-                    cnames = [new_name]
+                cnames = [new_name] + (cnames[1:] if len(cnames) > 1 else [])
                 await update_names(rename_id, cnames)
-                await message.reply_text(f"✅ Name changed successfully to:\n**{new_name}**", parse_mode="Markdown")
+                await answer_callback(update, "✅ Name changed successfully!")
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "file_options")
-            else:
-                await message.reply_text("❌ File not found.")
         return
 
     elif state == "awaiting_addname_text":
-        new_name = text.strip()
+        new_name = text
         addname_id = context.user_data.get('addname_id')
-        if addname_id and new_name:
+        if addname_id:
             row = await get_file_by_id(addname_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
                 if new_name not in cnames:
                     cnames.append(new_name)
                     await update_names(addname_id, cnames)
-                    await message.reply_text(f"✅ Tag added: **{new_name}**", parse_mode="Markdown")
+                    await answer_callback(update, "✅ Name added.")
                 else:
-                    await message.reply_text("This tag already exists.")
+                    await message.reply_text("Name already exists.")
                 context.user_data.pop('addname_id', None)
                 await enter_state(update, context, "file_options")
         return
@@ -766,7 +753,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif state == "awaiting_batch_tag":
-        tag = text.strip()
+        tag = text
         if tag:
             file_ids = context.user_data.get('batch_tag_files', [])
             for fid in file_ids:
@@ -777,7 +764,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await message.reply_text(f"✅ Tag '{tag}' added to selected files.", parse_mode="Markdown")
+            await answer_callback(update, f"Tag added.", True)
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
         return
 
@@ -796,13 +783,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please join @dilemmapl first.")
         return
 
-    welcome_text = "👋 Welcome!\nSend any file → Add Tag → Rename if needed."
+    welcome_text = "👋 Welcome!\nJust send any file and I'll save it automatically."
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
     context.user_data['state'] = "main"
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user.id)
-    await update.message.reply_text("Send file → Add Tag → Rename", parse_mode="Markdown")
+    await update.message.reply_text("Just send any file.", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
