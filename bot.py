@@ -7,7 +7,7 @@ from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultC
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters
 import uvicorn
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,7 +18,6 @@ CHANNEL_USERNAME = "@dilemmapl"
 PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = "/webhook"
 
-# اصلاح آدرس Webhook با استفاده از متغیر استاندارد Render
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 if RENDER_EXTERNAL_URL:
     WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
@@ -88,7 +87,7 @@ async def get_user_files(user_id):
             return await conn.fetch("SELECT * FROM files ORDER BY id")
         return await conn.fetch("SELECT * FROM files WHERE user_id=$1 ORDER BY id", user_id)
 
-async def get_user_files_filtered(user_id, offset, limit, file_type=None, date_from=None, date_to=None):
+async def get_user_files_filtered(user_id, offset, limit, file_type=None):
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -99,18 +98,12 @@ async def get_user_files_filtered(user_id, offset, limit, file_type=None, date_f
         if file_type:
             conditions.append(f"file_type = ${len(params)+1}")
             params.append(file_type)
-        if date_from:
-            conditions.append(f"created_at >= ${len(params)+1}")
-            params.append(date_from)
-        if date_to:
-            conditions.append(f"created_at <= ${len(params)+1}")
-            params.append(date_to)
         where = " AND ".join(conditions) if conditions else "1=1"
         query = f"SELECT * FROM files WHERE {where} ORDER BY id LIMIT ${len(params)+1} OFFSET ${len(params)+2}"
         params.extend([limit, offset])
         return await conn.fetch(query, *params)
 
-async def get_user_files_count_filtered(user_id, file_type=None, date_from=None, date_to=None):
+async def get_user_files_count_filtered(user_id, file_type=None):
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -121,12 +114,6 @@ async def get_user_files_count_filtered(user_id, file_type=None, date_from=None,
         if file_type:
             conditions.append(f"file_type = ${len(params)+1}")
             params.append(file_type)
-        if date_from:
-            conditions.append(f"created_at >= ${len(params)+1}")
-            params.append(date_from)
-        if date_to:
-            conditions.append(f"created_at <= ${len(params)+1}")
-            params.append(date_to)
         where = " AND ".join(conditions) if conditions else "1=1"
         query = f"SELECT COUNT(*) FROM files WHERE {where}"
         row = await conn.fetchrow(query, *params)
@@ -153,6 +140,26 @@ async def get_user_total_size(user_id):
         else:
             row = await conn.fetchrow("SELECT SUM(file_size) FROM files WHERE user_id=$1", user_id)
         return row[0] if row[0] else 0
+
+async def get_user_file_stats(user_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if user_id == ADMIN_ID:
+            rows = await conn.fetch("""
+                SELECT file_type, COUNT(*) as count, SUM(file_size) as size 
+                FROM files GROUP BY file_type
+            """)
+            total_files = await conn.fetchval("SELECT COUNT(*) FROM files")
+            total_size = await conn.fetchval("SELECT SUM(file_size) FROM files")
+        else:
+            rows = await conn.fetch("""
+                SELECT file_type, COUNT(*) as count, SUM(file_size) as size 
+                FROM files WHERE user_id=$1 GROUP BY file_type
+            """, user_id)
+            total_files = await conn.fetchval("SELECT COUNT(*) FROM files WHERE user_id=$1", user_id)
+            total_size = await conn.fetchval("SELECT SUM(file_size) FROM files WHERE user_id=$1", user_id)
+        stats = {row['file_type']: {'count': row['count'], 'size': row['size']} for row in rows}
+        return total_files, total_size, stats
 
 async def delete_file(file_db_id):
     pool = await get_pool()
@@ -193,16 +200,8 @@ def human_readable_size(size_bytes):
         i += 1
     return f"{size:.2f} {units[i]}"
 
-def get_msg(update: Update):
-    if update.message:
-        return update.message
-    elif update.callback_query:
-        return update.callback_query.message
-    return None
-
 # ---------- UI Helpers ----------
 def get_main_menu_keyboard():
-    # گزینه Settings حذف شد
     keyboard = [
         [InlineKeyboardButton("📁 My Files", callback_data="myfiles")],
         [InlineKeyboardButton("➕ New File", callback_data="newfile")],
@@ -216,9 +215,6 @@ def get_back_home_keyboard(back_callback="back", home_callback="home"):
         [InlineKeyboardButton("🔙 Back", callback_data=back_callback),
          InlineKeyboardButton("🏠 Home", callback_data=home_callback)]
     ])
-
-def get_home_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="home")]])
 
 def get_cancel_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="home")]])
@@ -323,8 +319,18 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size=file_size
     )
 
-    await message.reply_text(f"✅ {FILE_TYPE_EMOJI.get(file_type, '📄')} **{file_name}** saved.", parse_mode="Markdown")
-    await enter_state(update, context, "main")
+    # Get the last inserted file id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        last_file = await conn.fetchrow(
+            "SELECT id FROM files WHERE user_id=$1 ORDER BY id DESC LIMIT 1", user.id
+        )
+        if last_file:
+            context.user_data['pending_name_file_id'] = last_file['id']
+            context.user_data['pending_file_type'] = file_type
+            context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
+
+    await enter_state(update, context, "awaiting_custom_name")
 
 # ---------- Core Navigation ----------
 async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state: str, **kwargs):
@@ -339,6 +345,11 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "➕ New File", "callback": "newfile"}]
         text = "Send a file or press Cancel."
         reply_markup = get_cancel_keyboard()
+    elif state == "awaiting_custom_name":
+        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "➕ New File", "callback": "newfile"}]
+        emoji = user_data.get('pending_file_emoji', '📄')
+        text = f"{emoji} File received!\n\nPlease send a name for this file:"
+        reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     elif state == "myfiles":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}]
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
@@ -387,17 +398,6 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
     elif state == "search_results":
         await show_search_results(update, context)
         return
-    elif state == "settings":  # این بخش دیگر قابل دسترس نیست ولی برای جلوگیری از خطا نگه داشته شده
-        breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "⚙️ Settings", "callback": "settings"}]
-        page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
-        view_mode = user_data.get('view_mode', 'list')
-        keyboard = [
-            [InlineKeyboardButton(f"📏 Page Size: {page_size}", callback_data="change_pagesize")],
-            [InlineKeyboardButton(f"👁 View Mode: {'Gallery' if view_mode=='gallery' else 'List'}", callback_data="toggle_view")],
-            [InlineKeyboardButton("🔙 Back", callback_data="home")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        text = f"Settings\nPage Size: {page_size}\nView Mode: {view_mode}"
     elif state == "awaiting_broadcast_message":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Send the message to broadcast to all users:"
@@ -449,24 +449,14 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user = update.effective_user
     user_data = context.user_data
     file_type_filter = user_data.get('filter_type', None)
-    date_filter = user_data.get('filter_date', None)
     page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
     view_mode = user_data.get('view_mode', 'list')
     selected = user_data.get('selected_files', set())
     selection_mode = user_data.get('selection_mode', False)
 
-    date_from = None
-    date_to = None
-    if date_filter == 'today':
-        date_from = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    elif date_filter == 'week':
-        date_from = datetime.now() - timedelta(days=7)
-    elif date_filter == 'month':
-        date_from = datetime.now() - timedelta(days=30)
-
     offset = page * page_size
-    files = await get_user_files_filtered(user.id, offset, page_size, file_type_filter, date_from, date_to)
-    total = await get_user_files_count_filtered(user.id, file_type_filter, date_from, date_to)
+    files = await get_user_files_filtered(user.id, offset, page_size, file_type_filter)
+    total = await get_user_files_count_filtered(user.id, file_type_filter)
     total_pages = max(1, (total + page_size - 1) // page_size)
 
     keyboard = []
@@ -476,8 +466,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         filter_buttons.append(InlineKeyboardButton(f"❌ Filter: {file_type_filter}", callback_data="clear_filter"))
     else:
         filter_buttons.append(InlineKeyboardButton("🔍 Filter", callback_data="filter_menu"))
-    if date_filter:
-        filter_buttons.append(InlineKeyboardButton(f"📅 {date_filter}", callback_data="clear_date"))
     keyboard.append(filter_buttons)
 
     mode_text = "✅ Select Mode" if selection_mode else "☑️ Select Mode"
@@ -540,11 +528,8 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         {"label": "🏠 Main", "callback": "home"},
         {"label": "📁 My Files", "callback": "myfiles"}
     ]
-    if file_type_filter or date_filter:
-        filters_str = []
-        if file_type_filter: filters_str.append(file_type_filter)
-        if date_filter: filters_str.append(date_filter)
-        breadcrumb.append({"label": f"🔍 {'+'.join(filters_str)}", "callback": "myfiles"})
+    if file_type_filter:
+        breadcrumb.append({"label": f"🔍 {file_type_filter}", "callback": "myfiles"})
 
     text = f"📂 Your files (Page {page+1}/{total_pages})"
     if selection_mode:
@@ -602,17 +587,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "search_results")
 
     elif data == "newfile":
-        user_data['nav_history'] = user_data.get('nav_history', []) + ["main"]
         await enter_state(update, context, "awaiting_file")
     elif data == "myfiles":
         await enter_state(update, context, "myfiles", page=0)
     elif data == "search":
         await enter_state(update, context, "awaiting_search")
     elif data == "memory":
-        size = await get_user_total_size(user.id)
-        await answer_callback(update, f"Total storage: {human_readable_size(size)}")
-    elif data == "settings":  # اگر کسی از طریق لینک مستقیم وارد شد، به خانه برگردان
-        await enter_state(update, context, "main")
+        total_files, total_size, stats = await get_user_file_stats(user.id)
+        msg = f"📊 **Storage Statistics**\n\n"
+        msg += f"Total Files: {total_files}\n"
+        msg += f"Total Size: {human_readable_size(total_size)}\n\n"
+        for ftype, data in stats.items():
+            emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
+            msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
+        if not stats:
+            msg += "No files yet."
+        await answer_callback(update, msg, show_alert=True)
 
     elif data.startswith("myfiles_page_"):
         page = int(data.split("_")[-1])
@@ -707,10 +697,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🎵 Audio", callback_data="filter_type_audio"),
              InlineKeyboardButton("🎙 Voice", callback_data="filter_type_voice")],
             [InlineKeyboardButton("📄 Document", callback_data="filter_type_document")],
-            [InlineKeyboardButton("📅 Today", callback_data="filter_date_today"),
-             InlineKeyboardButton("📅 Week", callback_data="filter_date_week")],
-            [InlineKeyboardButton("📅 Month", callback_data="filter_date_month")],
-            [InlineKeyboardButton("❌ Clear Filters", callback_data="clear_filters")],
+            [InlineKeyboardButton("❌ Clear Filter", callback_data="clear_filters")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_to_myfiles")]
         ]
         await query.edit_message_text("Select filter:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -718,13 +705,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ftype = data[12:]
         user_data['filter_type'] = ftype if ftype != "none" else None
         await show_myfiles_page(update, context, page=0)
-    elif data.startswith("filter_date_"):
-        date_opt = data[12:]
-        user_data['filter_date'] = date_opt if date_opt != "none" else None
-        await show_myfiles_page(update, context, page=0)
     elif data == "clear_filters":
         user_data['filter_type'] = None
-        user_data['filter_date'] = None
         await show_myfiles_page(update, context, page=0)
 
     elif data == "change_pagesize":
@@ -733,7 +715,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_size = PAGE_SIZE_OPTIONS[(idx + 1) % len(PAGE_SIZE_OPTIONS)]
         user_data['page_size'] = new_size
         await answer_callback(update, f"Page size set to {new_size}")
-        # بعد از تغییر، صفحه فعلی را به‌روز کن
         await show_myfiles_page(update, context, page=user_data.get('myfiles_page', 0))
     elif data == "toggle_view":
         current = user_data.get('view_mode', 'list')
@@ -741,12 +722,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['view_mode'] = new_mode
         await answer_callback(update, f"View mode: {new_mode}")
         await show_myfiles_page(update, context, page=user_data.get('myfiles_page', 0))
-
-    elif data == "broadcast":
-        if user.id != ADMIN_ID:
-            await answer_callback(update, "Admin only.")
-            return
-        await enter_state(update, context, "awaiting_broadcast_message")
 
     elif data == "noop":
         pass
@@ -771,6 +746,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get('state', 'main')
     user_data = context.user_data
+
+    if state == "awaiting_custom_name":
+        custom_name = text.strip()
+        file_id = user_data.get('pending_name_file_id')
+        if file_id and custom_name:
+            row = await get_file_by_id(file_id)
+            if row:
+                await update_names(file_id, [custom_name])
+                await message.reply_text(f"✅ File saved with name: **{custom_name}**", parse_mode="Markdown")
+                user_data.pop('pending_name_file_id', None)
+                user_data.pop('pending_file_type', None)
+                user_data.pop('pending_file_emoji', None)
+        await enter_state(update, context, "main")
+        return
 
     if state == "awaiting_rename_text":
         new_name = text.strip()
@@ -921,7 +910,7 @@ async def main():
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
-    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
 
     webhook_set = await ptb_app.bot.set_webhook(WEBHOOK_URL)
     if webhook_set:
