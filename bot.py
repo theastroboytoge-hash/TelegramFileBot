@@ -207,9 +207,6 @@ def get_back_home_keyboard(back_callback="back", home_callback="home"):
          InlineKeyboardButton("🏠 Home", callback_data=home_callback)]
     ])
 
-def get_cancel_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="home")]])
-
 def format_breadcrumb(breadcrumb):
     return " > ".join([f"{item['label']}" for item in breadcrumb])
 
@@ -291,7 +288,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = message.document
         file_name = message.document.file_name or "document"
     else:
-        return  # فایل پشتیبانی نشده
+        return
 
     file_id = file.file_id
     file_size = getattr(file, 'file_size', 0) or 0
@@ -305,7 +302,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size=file_size
     )
 
-    # دریافت آخرین فایل
     pool = await get_pool()
     async with pool.acquire() as conn:
         last_file = await conn.fetchrow(
@@ -313,9 +309,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if last_file:
             context.user_data['current_file_id'] = last_file['id']
-            logger.info(f"File saved automatically. ID: {last_file['id']} - Name: {file_name}")
+            logger.info(f"File saved. ID: {last_file['id']} - Name: {file_name}")
 
-    # مستقیم برو به پنل مدیریت فایل
+    await message.reply_text("✅ File saved successfully!", parse_mode="Markdown")
     await enter_state(update, context, "file_options")
 
 # ---------- Core Navigation ----------
@@ -325,7 +321,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
 
     if state == "main":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
-        text = "Welcome! Choose an option:"
+        text = "Welcome! Send any file to save it."
         reply_markup = get_main_menu_keyboard()
     elif state == "myfiles":
         await show_myfiles_page(update, context, page=kwargs.get('page', 0))
@@ -361,7 +357,7 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
         reply_markup = InlineKeyboardMarkup(keyboard)
     elif state == "awaiting_rename_text":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "✏️ Rename", "callback": "rename"}]
-        text = "Send the new name:"
+        text = "Send the new name for this file:"
         reply_markup = get_back_home_keyboard(back_callback="back_to_file_options")
     elif state == "awaiting_addname_text":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📁 My Files", "callback": "myfiles"}, {"label": "➕ Add Name", "callback": "addname"}]
@@ -516,6 +512,7 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
+# ---------- Search Results ----------
 async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = context.user_data
@@ -564,7 +561,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "search_results")
 
     elif data == "newfile":
-        await enter_state(update, context, "main")  # دیگر نیازی به حالت awaiting_file نیست
+        await enter_state(update, context, "main")
     elif data == "myfiles":
         await enter_state(update, context, "myfiles", page=0)
     elif data == "search":
@@ -634,7 +631,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['addname_id'] = int(data[9:])
         await enter_state(update, context, "awaiting_addname_text")
 
-    # ... (بقیه callbackها بدون تغییر)
     elif data == "toggle_selection_mode":
         user_data['selection_mode'] = not user_data.get('selection_mode', False)
         if not user_data['selection_mode']:
@@ -719,7 +715,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get('state', 'main')
 
-    # Rename
     if state == "awaiting_rename_text":
         new_name = text
         rename_id = context.user_data.get('rename_id')
@@ -727,14 +722,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = await get_file_by_id(rename_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
-                cnames = [new_name] + cnames[1:] if cnames else [new_name]
+                cnames = [new_name] + (cnames[1:] if len(cnames) > 1 else [])
                 await update_names(rename_id, cnames)
-                await answer_callback(update, "✅ Name updated.")
+                await answer_callback(update, "✅ Name changed successfully!")
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "file_options")
         return
 
-    # Add Name
     elif state == "awaiting_addname_text":
         new_name = text
         addname_id = context.user_data.get('addname_id')
@@ -770,11 +764,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag added to files.", True)
+            await answer_callback(update, f"Tag added.", True)
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
         return
 
-    # اگر پیام متنی معمولی بود → به منوی اصلی برو
     await record_user(user.id)
     if not await check_membership(context.bot, user.id):
         await message.reply_text("Please join @dilemmapl first.")
@@ -790,21 +783,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please join @dilemmapl first.")
         return
 
-    if 'first_start' not in context.user_data:
-        context.user_data['first_start'] = True
-        welcome_text = (
-            "👋 Welcome to FileManager Bot!\n\n"
-            "Just send any file and I'll save it automatically.\n"
-            "You can then rename, delete or view it."
-        )
-        await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
-        context.user_data['state'] = "main"
-    else:
-        await enter_state(update, context, "main")
+    welcome_text = "👋 Welcome!\nJust send any file and I'll save it automatically."
+    await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
+    context.user_data['state'] = "main"
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user.id)
-    await update.message.reply_text("Just send any file.\nUse menu for other options.", parse_mode="Markdown")
+    await update.message.reply_text("Just send any file.", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -848,8 +833,6 @@ async def main():
 
     ptb_app.add_handler(InlineQueryHandler(inline_query))
     ptb_app.add_handler(CallbackQueryHandler(button_callback))
-    
-    # همه فایل‌ها را بگیر
     ptb_app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_file))
     ptb_app.add_handler(MessageHandler(filters.TEXT & \
                                        filters.COMMAND, handle_message))
