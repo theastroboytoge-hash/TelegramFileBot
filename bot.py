@@ -305,12 +305,12 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[file_name],   # اسم اولیه
+        custom_names=[file_name],
         file_type=file_type,
         file_size=file_size
     )
 
-    # دریافت آخرین فایل ذخیره شده
+    # دریافت آخرین فایل
     pool = await get_pool()
     async with pool.acquire() as conn:
         last_file = await conn.fetchrow(
@@ -319,7 +319,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if last_file:
             context.user_data['pending_name_file_id'] = last_file['id']
             context.user_data['pending_file_emoji'] = FILE_TYPE_EMOJI.get(file_type, '📄')
-            logger.info(f"File saved with temp id: {last_file['id']} for user {user.id}")
+            logger.info(f"New file uploaded. Pending name for id: {last_file['id']} - Type: {file_type}")
 
     await enter_state(update, context, "awaiting_custom_name")
 
@@ -743,20 +743,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "awaiting_custom_name":
         custom_name = text.strip()
-        file_id = user_data.pop('pending_name_file_id', None)   # pop برای جلوگیری از استفاده دوباره
+        file_id = user_data.pop('pending_name_file_id', None)
+        emoji = user_data.pop('pending_file_emoji', '📄')
+        
         if file_id and custom_name:
             try:
                 await update_names(file_id, [custom_name])
-                await message.reply_text(f"✅ File saved with name: **{custom_name}**", parse_mode="Markdown")
-                logger.info(f"Custom name '{custom_name}' saved for file_id {file_id}")
+                await message.reply_text(f"✅ {emoji} File saved successfully with name: **{custom_name}**", parse_mode="Markdown")
+                logger.info(f"✅ Custom name '{custom_name}' successfully saved for file_id {file_id}")
             except Exception as e:
-                logger.error(f"Error saving custom name: {e}")
-                await message.reply_text("Error saving name. Please try again.")
+                logger.error(f"Failed to save custom name: {e}")
+                await message.reply_text("❌ Error saving the name. Please try again.")
         else:
             await message.reply_text("No pending file found.")
+        
         await enter_state(update, context, "main")
         return
 
+    # بقیه حالت‌ها (rename, addname, search و ...)
     if state == "awaiting_rename_text":
         new_name = text.strip()
         rename_id = user_data.get('rename_id')
