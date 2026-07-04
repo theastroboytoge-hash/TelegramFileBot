@@ -305,11 +305,12 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user.id,
         file_id=file_id,
         file_name=file_name,
-        custom_names=[file_name],   # ابتدا نام فایل اصلی
+        custom_names=[file_name],
         file_type=file_type,
         file_size=file_size
     )
 
+    # دریافت آخرین فایل
     pool = await get_pool()
     async with pool.acquire() as conn:
         last_file = await conn.fetchrow(
@@ -433,7 +434,7 @@ async def answer_callback(update: Update, text, show_alert=False):
     if update.callback_query:
         await update.callback_query.answer(text, show_alert=show_alert)
 
-# ---------- My Files Page ----------
+# ---------- My Files Page & Search (بدون تغییر اساسی) ----------
 async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     user = update.effective_user
     user_data = context.user_data
@@ -529,7 +530,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_data['myfiles_page'] = page
     user_data['state'] = "myfiles"
 
-# ---------- Search Results ----------
 async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_data = context.user_data
@@ -730,9 +730,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text = (message.text or message.caption or "").strip()
 
-    # اولویت: حالت‌های متنی (نام‌گذاری، جستجو، rename و ...)
     state = context.user_data.get('state', 'main')
 
+    # === نام‌گذاری اولیه بعد از آپلود ===
     if state == "awaiting_custom_name":
         custom_name = text
         file_id = context.user_data.pop('pending_name_file_id', None)
@@ -742,16 +742,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await update_names(file_id, [custom_name])
                 logger.info(f"Custom name saved: {custom_name} for file {file_id}")
-                await message.reply_text(f"✅ {emoji} File saved successfully with name: **{custom_name}**", parse_mode="Markdown")
+                await message.reply_text(f"✅ {emoji} File saved with name: **{custom_name}**", parse_mode="Markdown")
+                
+                # === مهم: مستقیم برو به پنل فایل ===
+                context.user_data['current_file_id'] = file_id
+                await enter_state(update, context, "file_options")
+                return
             except Exception as e:
                 logger.error(f"Failed to save custom name: {e}")
-                await message.reply_text("❌ Error saving the name. Please try again.")
-        else:
-            await message.reply_text("No pending file found.")
+                await message.reply_text("❌ Error saving the name.")
         
         await enter_state(update, context, "main")
         return
 
+    # Rename
     if state == "awaiting_rename_text":
         new_name = text
         rename_id = context.user_data.get('rename_id')
@@ -759,13 +763,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = await get_file_by_id(rename_id)
             if row:
                 cnames = json.loads(row['custom_names'] or '[]')
-                cnames = [new_name] if not cnames else [new_name] + cnames[1:]
+                cnames = [new_name] + cnames[1:] if cnames else [new_name]
                 await update_names(rename_id, cnames)
-                await answer_callback(update, "Name updated successfully.")
+                await answer_callback(update, "✅ Name updated.")
                 context.user_data.pop('rename_id', None)
                 await enter_state(update, context, "file_options")
         return
 
+    # Add Name
     elif state == "awaiting_addname_text":
         new_name = text
         addname_id = context.user_data.get('addname_id')
@@ -776,19 +781,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if new_name not in cnames:
                     cnames.append(new_name)
                     await update_names(addname_id, cnames)
-                    await answer_callback(update, "Name added successfully.")
+                    await answer_callback(update, "✅ Name added.")
                 else:
-                    await message.reply_text("This name already exists.")
+                    await message.reply_text("Name already exists.")
                 context.user_data.pop('addname_id', None)
                 await enter_state(update, context, "file_options")
         return
 
+    # بقیه حالت‌ها
     elif state == "awaiting_search":
         if text:
             context.user_data['search_query'] = text
             await enter_state(update, context, "search_results")
-        else:
-            await message.reply_text("Please send a search term.")
         return
 
     elif state == "awaiting_batch_tag":
@@ -803,13 +807,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         cnames.append(tag)
                         await update_names(fid, cnames)
             context.user_data.pop('batch_tag_files', None)
-            await answer_callback(update, f"Tag added to {len(file_ids)} files.", True)
+            await answer_callback(update, f"Tag added.", True)
             await enter_state(update, context, "myfiles", page=context.user_data.get('myfiles_page', 0))
-        else:
-            await message.reply_text("Please send a non-empty tag.")
         return
 
-    # حالا فایل‌ها
+    # آپلود فایل
     if message.photo or message.video or message.audio or message.voice or message.document:
         await handle_file(update, context)
         return
