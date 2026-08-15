@@ -34,8 +34,7 @@ FILE_TYPE_EMOJI = {
     "photo": "🖼️", "video": "📽️", "audio": "🎵", "voice": "🎙️", "document": "📄"
 }
 
-PAGE_SIZE_OPTIONS = [5, 10, 20]
-DEFAULT_PAGE_SIZE = 5
+PAGE_SIZE = 10
 PANEL_PAGE_SIZE = 20
 
 # ---------- Database Functions ----------
@@ -500,7 +499,7 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user = update.effective_user
     user_data = context.user_data
     file_type_filter = user_data.get('filter_type', None)
-    page_size = user_data.get('page_size', DEFAULT_PAGE_SIZE)
+    page_size = PAGE_SIZE
     selected = user_data.get('selected_files', set())
     selection_mode = user_data.get('selection_mode', False)
 
@@ -564,7 +563,6 @@ async def show_myfiles_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         keyboard.append(nav_buttons)
 
     keyboard.append([
-        InlineKeyboardButton(f"📏 {page_size}", callback_data="change_pagesize"),
         InlineKeyboardButton("🔄 View", callback_data="toggle_view")
     ])
 
@@ -710,7 +708,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
             if not stats:
                 msg += "No files yet."
-            await context.bot.send_message(user.id, msg, parse_mode="Markdown")
+            breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📊 Memory", "callback": "memory"}]
+            await update_main_message(update, context, msg, get_back_home_keyboard(back_callback="back_to_main"), breadcrumb)
         except Exception as e:
             logger.error(f"Memory error: {e}")
             await answer_callback(update, "Error retrieving statistics.", True)
@@ -827,13 +826,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data['filter_type'] = None
         await show_myfiles_page(update, context, page=0)
 
-    elif data == "change_pagesize":
-        current = user_data.get('page_size', DEFAULT_PAGE_SIZE)
-        idx = PAGE_SIZE_OPTIONS.index(current) if current in PAGE_SIZE_OPTIONS else 0
-        new_size = PAGE_SIZE_OPTIONS[(idx + 1) % len(PAGE_SIZE_OPTIONS)]
-        user_data['page_size'] = new_size
-        await answer_callback(update, f"Page size set to {new_size}")
-        await show_myfiles_page(update, context, page=user_data.get('myfiles_page', 0))
     elif data == "toggle_view":
         current = user_data.get('view_mode', 'list')
         new_mode = 'gallery' if current == 'list' else 'list'
@@ -1096,7 +1088,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3️⃣ Use inline search by typing @botusername in any chat.\n\n"
             "Let's get started!"
         )
-        await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard())
+        await update_main_message(update, context, welcome_text, get_main_menu_keyboard())
         context.user_data['state'] = "main"
     else:
         await enter_state(update, context, "main")
