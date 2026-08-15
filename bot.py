@@ -36,6 +36,7 @@ FILE_TYPE_EMOJI = {
 
 PAGE_SIZE_OPTIONS = [5, 10, 20]
 DEFAULT_PAGE_SIZE = 5
+PANEL_PAGE_SIZE = 20
 
 # ---------- Database Functions ----------
 async def get_pool():
@@ -177,6 +178,23 @@ async def get_all_user_ids():
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT user_id FROM users")
+        return [row['user_id'] for row in rows]
+
+async def get_total_users_count():
+    """Return the total number of registered users."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        return count or 0
+
+async def get_users_paginated(offset, limit):
+    """Return a page of user_ids ordered by first_seen (most recent first)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id FROM users ORDER BY first_seen DESC LIMIT $1 OFFSET $2",
+            limit, offset
+        )
         return [row['user_id'] for row in rows]
 
 async def check_membership(bot, user_id):
@@ -589,6 +607,51 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update_main_message(update, context, text, reply_markup,
                              [{"label": "🏠 Main", "callback": "home"}, {"label": "🔍 Search", "callback": "search"}])
 
+# ---------- Admin Panel (Users) ----------
+async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
+    """Render a paginated panel showing total user count and their IDs. Admin only."""
+    total_users = await get_total_users_count()
+    total_pages = max(1, (total_users + PANEL_PAGE_SIZE - 1) // PANEL_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    offset = page * PANEL_PAGE_SIZE
+
+    user_ids = await get_users_paginated(offset, PANEL_PAGE_SIZE)
+
+    lines = [f"👥 **Total users:** {total_users}", ""]
+    if user_ids:
+        start_num = offset + 1
+        for i, uid in enumerate(user_ids):
+            lines.append(f"{start_num + i}. `{uid}`")
+    else:
+        lines.append("No users found.")
+
+    text = "\n".join(lines)
+
+    keyboard = []
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"panel_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"panel_page_{page+1}"))
+        keyboard.append(nav_buttons)
+
+    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"panel_page_{page}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+
+    chat_id = update.effective_chat.id
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                text, reply_markup=reply_markup, parse_mode="Markdown"
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Could not edit panel message: {e}")
+    await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="Markdown")
+
 # ---------- Callback Handlers ----------
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -635,6 +698,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("myfiles_page_"):
         page = int(data.split("_")[-1])
         await show_myfiles_page(update, context, page)
+
+    elif data.startswith("panel_page_"):
+        if user.id != ADMIN_ID:
+            await answer_callback(update, "⛔ Not authorized.", True)
+            return
+        page = int(data.split("_")[-1])
+        await show_admin_panel(update, context, page)
 
     elif data.startswith("listfile_"):
         file_id = int(data[9:])
@@ -1046,6 +1116,13 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_ids = await get_all_user_ids()
     await update.message.reply_text(f"👥 Total users: {len(user_ids)}")
 
+async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only panel showing total user count and a paginated list of user IDs."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+    await show_admin_panel(update, context, page=0)
+
 # ---------- Webhook & FastAPI ----------
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
@@ -1075,6 +1152,7 @@ async def main():
     ptb_app.add_handler(CommandHandler("cancel", cancel))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
+    ptb_app.add_handler(CommandHandler("panel", panel_command))
 
     # Add other handlers
     ptb_app.add_handler(InlineQueryHandler(inline_query))
