@@ -66,12 +66,23 @@ async def get_pool():
                     first_seen TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
     return db_pool
 
-async def record_user(user_id):
+async def record_user(user):
+    """Store/update the user's id along with their current username and first name."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
+        await conn.execute(
+            """
+            INSERT INTO users (user_id, username, first_name)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE
+            SET username = EXCLUDED.username, first_name = EXCLUDED.first_name
+            """,
+            user.id, user.username, user.first_name
+        )
 
 async def add_file(user_id, file_id, file_name, custom_names, file_type, file_size):
     pool = await get_pool()
@@ -188,14 +199,14 @@ async def get_total_users_count():
         return count or 0
 
 async def get_users_paginated(offset, limit):
-    """Return a page of user_ids ordered by first_seen (most recent first)."""
+    """Return a page of users (id, username, first_name) ordered by first_seen (most recent first)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT user_id FROM users ORDER BY first_seen DESC LIMIT $1 OFFSET $2",
+            "SELECT user_id, username, first_name FROM users ORDER BY first_seen DESC LIMIT $1 OFFSET $2",
             limit, offset
         )
-        return [row['user_id'] for row in rows]
+        return rows
 
 async def check_membership(bot, user_id):
     try:
@@ -615,13 +626,22 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
     page = max(0, min(page, total_pages - 1))
     offset = page * PANEL_PAGE_SIZE
 
-    user_ids = await get_users_paginated(offset, PANEL_PAGE_SIZE)
+    users_rows = await get_users_paginated(offset, PANEL_PAGE_SIZE)
 
     lines = [f"👥 **Total users:** {total_users}", ""]
-    if user_ids:
+    if users_rows:
         start_num = offset + 1
-        for i, uid in enumerate(user_ids):
-            lines.append(f"{start_num + i}. `{uid}`")
+        for i, row in enumerate(users_rows):
+            uid = row['user_id']
+            username = row['username']
+            first_name = row['first_name']
+            if username:
+                label = f"@{username}"
+            elif first_name:
+                label = first_name
+            else:
+                label = "بدون یوزرنیم"
+            lines.append(f"{start_num + i}. {label} — `{uid}`")
     else:
         lines.append("No users found.")
 
@@ -834,7 +854,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = message.text or message.caption or ""
 
     # Record user
-    await record_user(user.id)
+    await record_user(user)
 
     # Check membership for non-command messages
     if not await check_membership(context.bot, user.id):
@@ -1059,7 +1079,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Start & Commands ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await record_user(user.id)
+    await record_user(user)
     
     if not await check_membership(context.bot, user.id):
         await update.message.reply_text("Please join @dilemmapl first.")
@@ -1082,7 +1102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "main")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await record_user(update.effective_user.id)
+    await record_user(update.effective_user)
     help_text = (
         "📚 **Help Menu**\n\n"
         "Use the menu buttons below to navigate:\n"
