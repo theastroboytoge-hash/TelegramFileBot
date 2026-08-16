@@ -1,6 +1,7 @@
 import logging
 import json
 import os
+import html
 import asyncpg
 from fastapi import FastAPI, Request
 from telegram import Update, InlineQueryResultCachedDocument, InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedVoice, InlineKeyboardButton, InlineKeyboardMarkup
@@ -626,7 +627,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
 
     users_rows = await get_users_paginated(offset, PANEL_PAGE_SIZE)
 
-    lines = [f"👥 **Total users:** {total_users}", ""]
+    lines = [f"👥 <b>Total users:</b> {total_users}", ""]
     if users_rows:
         start_num = offset + 1
         for i, row in enumerate(users_rows):
@@ -634,12 +635,12 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             username = row['username']
             first_name = row['first_name']
             if username:
-                label = f"@{username}"
+                label = html.escape(f"@{username}")
             elif first_name:
-                label = first_name
+                label = html.escape(first_name)
             else:
                 label = "بدون یوزرنیم"
-            lines.append(f"{start_num + i}. {label} — `{uid}`")
+            lines.append(f"{start_num + i}. {label} — <code>{uid}</code>")
     else:
         lines.append("No users found.")
 
@@ -663,12 +664,16 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
     if update.callback_query:
         try:
             await update.callback_query.edit_message_text(
-                text, reply_markup=reply_markup, parse_mode="Markdown"
+                text, reply_markup=reply_markup, parse_mode="HTML"
             )
             return
         except Exception as e:
             logger.warning(f"Could not edit panel message: {e}")
-    await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="Markdown")
+    try:
+        await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to send admin panel: {e}", exc_info=True)
+        await context.bot.send_message(chat_id, "❌ خطا در نمایش پنل. لاگ‌ها را بررسی کنید.")
 
 # ---------- Callback Handlers ----------
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1133,7 +1138,11 @@ async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
-    await show_admin_panel(update, context, page=0)
+    try:
+        await show_admin_panel(update, context, page=0)
+    except Exception as e:
+        logger.error(f"Panel command error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ خطا در باز کردن پنل: {str(e)}")
 
 # ---------- Webhook & FastAPI ----------
 @app.post(WEBHOOK_PATH)
