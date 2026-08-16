@@ -1131,7 +1131,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands*\n"
         "/start — Show the main menu\n"
         "/help — Show this help message\n"
-        "/export — List all your saved files as tappable buttons; tap a name to receive that file\n"
+        "/export — Get a plain-text list of all your files (name, type, size) — tap a name to copy it\n"
         "/cancel — Cancel whatever you're currently doing and go back to the "
         "main menu\n\n"
         "Got stuck somewhere? Just tap 🏠 Home to reset and start fresh."
@@ -1212,6 +1212,64 @@ async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Panel command error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error opening the panel: {str(e)}")
 
+# Telegram's hard limit per message is 4096 characters; keep a safety margin
+EXPORT_CHUNK_LIMIT = 3500
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the user a plain list of all their files (name, type, size).
+    Each file name is wrapped in <code> so tapping it copies the name.
+    Splits into multiple messages if the list exceeds Telegram's message limit."""
+    user = update.effective_user
+    await record_user(user)
+
+    try:
+        rows = await get_user_files(user.id)
+    except Exception as e:
+        logger.error(f"Export command error: {e}", exc_info=True)
+        await update.message.reply_text("❌ Error retrieving your files. Please try again.")
+        return
+
+    if not rows:
+        await update.message.reply_text("📭 You don't have any files saved yet.")
+        return
+
+    lines = []
+    for i, row in enumerate(rows, 1):
+        cnames = json.loads(row['custom_names'])
+        name = cnames[0] if cnames else row['file_name']
+        safe_name = html.escape(name)
+        ftype = row['file_type']
+        emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
+        size_str = human_readable_size(row['file_size'])
+        lines.append(f"{i}. <code>{safe_name}</code> — {emoji} {ftype} — {size_str}")
+
+    header = f"📄 <b>Your files ({len(rows)} total)</b>\n\n"
+
+    # Split lines into chunks that stay under Telegram's per-message limit
+    chunks = []
+    current = header
+    for line in lines:
+        # +1 accounts for the newline that will join this line to current
+        if len(current) + len(line) + 1 > EXPORT_CHUNK_LIMIT:
+            chunks.append(current)
+            current = line
+        else:
+            current = current + line if current == header else current + "\n" + line
+    if current:
+        chunks.append(current)
+
+    total_parts = len(chunks)
+    try:
+        for idx, chunk in enumerate(chunks, 1):
+            text = chunk
+            if total_parts > 1:
+                text += f"\n\n(Part {idx}/{total_parts})"
+            await update.message.reply_text(text, parse_mode="HTML")
+            await asyncio.sleep(0.05)
+    except Exception as e:
+        logger.error(f"Export send error: {e}", exc_info=True)
+        await update.message.reply_text("❌ Error sending the file list. Please try again.")
+
 # ---------- Webhook & FastAPI ----------
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
@@ -1242,6 +1300,7 @@ async def main():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
     ptb_app.add_handler(CommandHandler("panel", panel_command))
+    ptb_app.add_handler(CommandHandler("export", export_command))
     ptb_app.add_handler(CommandHandler("export", export_command))
 
     # Add other handlers
