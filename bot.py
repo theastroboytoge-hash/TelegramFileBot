@@ -236,7 +236,7 @@ def get_main_menu_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_back_home_keyboard(back_callback="back", home_callback="home"):
+def get_back_home_keyboard(back_callback="back_to_main", home_callback="home"):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Back", callback_data=back_callback),
          InlineKeyboardButton("🏠 Home", callback_data=home_callback)]
@@ -445,14 +445,14 @@ async def enter_state(update: Update, context: ContextTypes.DEFAULT_TYPE, state:
     elif state == "awaiting_search":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "🔍 Search", "callback": "search"}]
         text = "Send the search term:"
-        reply_markup = get_back_home_keyboard()
+        reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     elif state == "search_results":
         await show_search_results(update, context)
         return
     elif state == "awaiting_broadcast_message":
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Send the message to broadcast to all users:"
-        reply_markup = get_back_home_keyboard()
+        reply_markup = get_back_home_keyboard(back_callback="back_to_main")
     else:
         breadcrumb = [{"label": "🏠 Main", "callback": "home"}]
         text = "Unknown state. Go to main."
@@ -601,7 +601,7 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
     results = await search_files(user.id, query)
     if not results:
         text = f"No files found for '{query}'."
-        reply_markup = get_back_home_keyboard()
+        reply_markup = get_back_home_keyboard(back_callback="back_to_main")
         await update_main_message(update, context, text, reply_markup, 
                                  [{"label": "🏠 Main", "callback": "home"}, {"label": "🔍 Search", "callback": "search"}])
         return
@@ -686,6 +686,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "home":
         user_data.clear()
+        await enter_state(update, context, "main")
+    elif data == "back":
         await enter_state(update, context, "main")
     elif data == "back_to_main":
         await enter_state(update, context, "main")
