@@ -37,6 +37,7 @@ FILE_TYPE_EMOJI = {
 
 PAGE_SIZE = 10
 PANEL_PAGE_SIZE = 20
+EXPORT_BATCH_SIZE = 15
 
 # ---------- Database Functions ----------
 async def get_pool():
@@ -1130,6 +1131,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands*\n"
         "/start — Show the main menu\n"
         "/help — Show this help message\n"
+        "/export — List all your saved files as tappable buttons; tap a name to receive that file\n"
         "/cancel — Cancel whatever you're currently doing and go back to the "
         "main menu\n\n"
         "Got stuck somewhere? Just tap 🏠 Home to reset and start fresh."
@@ -1139,6 +1141,52 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await enter_state(update, context, "main")
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all of the user's files (name, type, size) as tappable buttons.
+    Tapping a name sends just that file. Splits into multiple messages if needed."""
+    user = update.effective_user
+    await record_user(user)
+
+    if not await check_membership(context.bot, user.id):
+        await update.message.reply_text("Please join @dilemmapl first.")
+        return
+
+    try:
+        files = await get_user_files(user.id)
+    except Exception as e:
+        logger.error(f"Export command error: {e}", exc_info=True)
+        await update.message.reply_text("❌ Error retrieving your files. Please try again.")
+        return
+
+    if not files:
+        await update.message.reply_text("📭 You don't have any saved files yet.")
+        return
+
+    total = len(files)
+    total_batches = (total + EXPORT_BATCH_SIZE - 1) // EXPORT_BATCH_SIZE
+
+    for batch_index in range(total_batches):
+        start = batch_index * EXPORT_BATCH_SIZE
+        batch = files[start:start + EXPORT_BATCH_SIZE]
+
+        keyboard = []
+        for i, row in enumerate(batch):
+            emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
+            cnames = json.loads(row['custom_names'])
+            name = cnames[0] if cnames else row['file_name']
+            if len(name) > 40:
+                name = name[:37] + "..."
+            size_str = human_readable_size(row['file_size'])
+            label = f"{start + i + 1}. {emoji} {name} — {size_str}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"showf_{row['id']}")])
+
+        if total_batches > 1:
+            header = f"📋 Your files ({batch_index + 1}/{total_batches}) — tap a name to receive that file:"
+        else:
+            header = "📋 Your files — tap a name to receive that file:"
+
+        await update.message.reply_text(header, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1194,6 +1242,7 @@ async def main():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
     ptb_app.add_handler(CommandHandler("users", users_command))
     ptb_app.add_handler(CommandHandler("panel", panel_command))
+    ptb_app.add_handler(CommandHandler("export", export_command))
 
     # Add other handlers
     ptb_app.add_handler(InlineQueryHandler(inline_query))
