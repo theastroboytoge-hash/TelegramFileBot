@@ -37,7 +37,6 @@ FILE_TYPE_EMOJI = {
 
 PAGE_SIZE = 10
 PANEL_PAGE_SIZE = 20
-EXPORT_BATCH_SIZE = 15
 
 # ---------- Database Functions ----------
 async def get_pool():
@@ -232,8 +231,7 @@ def get_main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("📁 My Files", callback_data="myfiles")],
         [InlineKeyboardButton("➕ New File", callback_data="newfile")],
-        [InlineKeyboardButton("🔍 Search", callback_data="search")],
-        [InlineKeyboardButton("📊 Memory", callback_data="memory")]
+        [InlineKeyboardButton("🔍 Search", callback_data="search")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -705,22 +703,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enter_state(update, context, "myfiles", page=0)
     elif data == "search":
         await enter_state(update, context, "awaiting_search")
-    elif data == "memory":
-        try:
-            total_files, total_size, stats = await get_user_file_stats(user.id)
-            msg = f"📊 **Storage Statistics**\n\n"
-            msg += f"Total Files: {total_files}\n"
-            msg += f"Total Size: {human_readable_size(total_size)}\n\n"
-            for ftype, data in stats.items():
-                emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
-                msg += f"{emoji} {ftype.capitalize()}: {data['count']} files ({human_readable_size(data['size'] or 0)})\n"
-            if not stats:
-                msg += "No files yet."
-            breadcrumb = [{"label": "🏠 Main", "callback": "home"}, {"label": "📊 Memory", "callback": "memory"}]
-            await update_main_message(update, context, msg, get_back_home_keyboard(back_callback="back_to_main"), breadcrumb)
-        except Exception as e:
-            logger.error(f"Memory error: {e}")
-            await answer_callback(update, "Error retrieving statistics.", True)
 
     elif data.startswith("myfiles_page_"):
         page = int(data.split("_")[-1])
@@ -1118,8 +1100,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Main Menu*\n"
         "• 📁 My Files — browse, filter, rename, tag, or delete your saved files\n"
         "• ➕ New File — upload a photo, video, voice note, audio, or document\n"
-        "• 🔍 Search — quickly find a file by name\n"
-        "• 📊 Memory — see your storage usage, broken down by file type\n\n"
+        "• 🔍 Search — quickly find a file by name\n\n"
         "*Inline Search* ⚡\n"
         "Type @botusername followed by a keyword in any chat (even ones I'm not "
         "part of) to instantly search and send your saved files — no need to "
@@ -1131,7 +1112,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands*\n"
         "/start — Show the main menu\n"
         "/help — Show this help message\n"
-        "/export — Get a plain-text list of all your files (name, type, size) — tap a name to copy it\n"
+        "/export — Get your storage summary plus a plain-text list of all your files (name, type, size) — tap a name to copy it\n"
         "/cancel — Cancel whatever you're currently doing and go back to the "
         "main menu\n\n"
         "Got stuck somewhere? Just tap 🏠 Home to reset and start fresh."
@@ -1141,52 +1122,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await enter_state(update, context, "main")
-
-async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all of the user's files (name, type, size) as tappable buttons.
-    Tapping a name sends just that file. Splits into multiple messages if needed."""
-    user = update.effective_user
-    await record_user(user)
-
-    if not await check_membership(context.bot, user.id):
-        await update.message.reply_text("Please join @dilemmapl first.")
-        return
-
-    try:
-        files = await get_user_files(user.id)
-    except Exception as e:
-        logger.error(f"Export command error: {e}", exc_info=True)
-        await update.message.reply_text("❌ Error retrieving your files. Please try again.")
-        return
-
-    if not files:
-        await update.message.reply_text("📭 You don't have any saved files yet.")
-        return
-
-    total = len(files)
-    total_batches = (total + EXPORT_BATCH_SIZE - 1) // EXPORT_BATCH_SIZE
-
-    for batch_index in range(total_batches):
-        start = batch_index * EXPORT_BATCH_SIZE
-        batch = files[start:start + EXPORT_BATCH_SIZE]
-
-        keyboard = []
-        for i, row in enumerate(batch):
-            emoji = FILE_TYPE_EMOJI.get(row['file_type'], "📄")
-            cnames = json.loads(row['custom_names'])
-            name = cnames[0] if cnames else row['file_name']
-            if len(name) > 40:
-                name = name[:37] + "..."
-            size_str = human_readable_size(row['file_size'])
-            label = f"{start + i + 1}. {emoji} {name} — {size_str}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"showf_{row['id']}")])
-
-        if total_batches > 1:
-            header = f"📋 Your files ({batch_index + 1}/{total_batches}) — tap a name to receive that file:"
-        else:
-            header = "📋 Your files — tap a name to receive that file:"
-
-        await update.message.reply_text(header, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -1233,6 +1168,24 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 You don't have any files saved yet.")
         return
 
+    try:
+        total_files, total_size, stats = await get_user_file_stats(user.id)
+    except Exception as e:
+        logger.error(f"Export stats error: {e}", exc_info=True)
+        total_files, total_size, stats = len(rows), sum(r['file_size'] or 0 for r in rows), {}
+
+    stats_lines = [
+        "📊 <b>Storage Summary</b>",
+        f"Total Files: {total_files}",
+        f"Total Size: {html.escape(human_readable_size(total_size))}"
+    ]
+    for ftype, data in stats.items():
+        emoji = FILE_TYPE_EMOJI.get(ftype, "📄")
+        stats_lines.append(
+            f"{emoji} {html.escape(ftype.capitalize())}: {data['count']} files "
+            f"({html.escape(human_readable_size(data['size'] or 0))})"
+        )
+
     lines = []
     for i, row in enumerate(rows, 1):
         cnames = json.loads(row['custom_names'])
@@ -1243,7 +1196,7 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size_str = human_readable_size(row['file_size'])
         lines.append(f"{i}. <code>{safe_name}</code> — {emoji} {ftype} — {size_str}")
 
-    header = f"📄 <b>Your files ({len(rows)} total)</b>\n\n"
+    header = "\n".join(stats_lines) + "\n\n📄 <b>Your files</b>\n\n"
 
     # Split lines into chunks that stay under Telegram's per-message limit
     chunks = []
