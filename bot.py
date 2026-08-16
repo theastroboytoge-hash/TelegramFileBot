@@ -639,7 +639,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             elif first_name:
                 label = html.escape(first_name)
             else:
-                label = "بدون یوزرنیم"
+                label = "No username"
             lines.append(f"{start_num + i}. {label} — <code>{uid}</code>")
     else:
         lines.append("No users found.")
@@ -673,7 +673,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, p
         await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to send admin panel: {e}", exc_info=True)
-        await context.bot.send_message(chat_id, "❌ خطا در نمایش پنل. لاگ‌ها را بررسی کنید.")
+        await context.bot.send_message(chat_id, "❌ Error displaying the panel. Please check the logs.")
 
 # ---------- Callback Handlers ----------
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1085,13 +1085,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'first_start' not in context.user_data:
         context.user_data['first_start'] = True
         welcome_text = (
-            "👋 Welcome to FileManager Bot!\n\n"
-            "I can store your files and let you search them inline.\n"
-            "Here's how to start:\n"
-            "1️⃣ Tap '➕ New File' to upload a file.\n"
-            "2️⃣ Tap '📁 My Files' to manage your files.\n"
-            "3️⃣ Use inline search by typing @botusername in any chat.\n\n"
-            "Let's get started!"
+            "👋 Hey there! Welcome aboard.\n\n"
+            "Think of me as your personal file vault, right here inside Telegram — "
+            "a place to upload, name, and instantly find whatever you need, whenever "
+            "you need it. No more scrolling through old chats hunting for that one file.\n\n"
+            "Here's what I can do for you:\n\n"
+            "📤 *Save anything* — photos, videos, voice notes, audio, and documents. "
+            "Give each one a name that actually makes sense to you.\n\n"
+            "📁 *Stay organized* — browse everything in one place, filter by type, "
+            "rename things, or tag multiple files at once.\n\n"
+            "🔍 *Find it fast* — search by name and get exactly what you're looking "
+            "for, no digging required.\n\n"
+            "⚡ *Send from anywhere* — type @botusername in any chat and your files "
+            "pop up instantly, ready to send. No need to come back here first.\n\n"
+            "📊 *Keep track* — check your storage stats anytime to see what you've "
+            "saved and how much space it's using.\n\n"
+            "Ready to get started? Tap '➕ New File' below and upload your first one!"
         )
         await update_main_message(update, context, welcome_text, get_main_menu_keyboard())
         context.user_data['state'] = "main"
@@ -1101,18 +1110,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await record_user(update.effective_user)
     help_text = (
-        "📚 **Help Menu**\n\n"
-        "Use the menu buttons below to navigate:\n"
-        "• 📁 My Files - View and manage your files\n"
-        "• ➕ New File - Upload a new file\n"
-        "• 🔍 Search - Search your files\n"
-        "• 📊 Memory - View storage statistics\n\n"
-        "**Inline Search:**\n"
-        "Type @botusername in any chat to search and send your files.\n\n"
-        "**Commands:**\n"
-        "/start - Start the bot\n"
-        "/help - Show this help\n"
-        "/cancel - Cancel current operation"
+        "📚 *Help & Commands*\n\n"
+        "Here's everything you can do:\n\n"
+        "*Main Menu*\n"
+        "• 📁 My Files — browse, filter, rename, tag, or delete your saved files\n"
+        "• ➕ New File — upload a photo, video, voice note, audio, or document\n"
+        "• 🔍 Search — quickly find a file by name\n"
+        "• 📊 Memory — see your storage usage, broken down by file type\n\n"
+        "*Inline Search* ⚡\n"
+        "Type @botusername followed by a keyword in any chat (even ones I'm not "
+        "part of) to instantly search and send your saved files — no need to "
+        "switch back to this chat.\n\n"
+        "*Managing Files*\n"
+        "Tap any file to see its options: show it, rename it, add an extra "
+        "name/tag, or delete it. In My Files, switch on Select Mode to manage "
+        "several files at once.\n\n"
+        "*Commands*\n"
+        "/start — Show the main menu\n"
+        "/help — Show this help message\n"
+        "/cancel — Cancel whatever you're currently doing and go back to the "
+        "main menu\n\n"
+        "Got stuck somewhere? Just tap 🏠 Home to reset and start fresh."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -1142,7 +1160,7 @@ async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_admin_panel(update, context, page=0)
     except Exception as e:
         logger.error(f"Panel command error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ خطا در باز کردن پنل: {str(e)}")
+        await update.message.reply_text(f"❌ Error opening the panel: {str(e)}")
 
 # ---------- Webhook & FastAPI ----------
 @app.post(WEBHOOK_PATH)
